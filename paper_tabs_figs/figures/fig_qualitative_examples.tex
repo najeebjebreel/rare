@@ -1,0 +1,19 @@
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_qualitative_examples.pdf}
+\caption{
+Four CIFAR-10 members flagged by LiRA-256 at FPR$=10^{-4}$, with their
+per-epoch target (blue) and single-reference (orange) loss trajectories.
+LT-IQR reads the spread of the target trajectory; dots mark the
+reference's bottom-50\% epochs, whose mean (dashed) is LT-BTM-R. Percentages give each score's
+rank among members. (a)~Both components rank the sample in their
+top-$3\%$. (b)~Only the volatile target trajectory flags it;
+the reference fits it well (LT-BTM-R outside the top-10\%).
+(c)~The target trajectory is stable, but the reference's loss stays high
+even in its best epochs (LT-IQR outside the top-10\%).
+(d)~Neither component alone reaches its top-$3\%$, yet their sum
+places the sample in \rare{}'s top-$3\%$: two moderate signals
+add up to high vulnerability.
+}
+\label{fig:qualitative_examples}
+\end{figure*}

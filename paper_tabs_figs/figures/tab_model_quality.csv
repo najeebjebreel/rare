@@ -1,0 +1,13 @@
+dataset,metric,mean,std
+CIFAR10,train_loss,0.0007,0.0001
+CIFAR10,test_loss,0.3560,0.0079
+CIFAR10,train_acc,99.9990,0.0032
+CIFAR10,test_acc,91.3750,0.2263
+CIFAR100,train_loss,0.0059,0.0002
+CIFAR100,test_loss,1.5848,0.0245
+CIFAR100,train_acc,99.9830,0.0048
+CIFAR100,test_acc,65.5530,0.4342
+CINIC10,train_loss,0.0023,0.0001
+CINIC10,test_loss,1.1070,0.0131
+CINIC10,train_acc,99.9740,0.0070
+CINIC10,test_acc,77.0240,0.2242

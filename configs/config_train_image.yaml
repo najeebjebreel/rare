@@ -1,0 +1,85 @@
+
+# This file contains unified settings for image datasets used in LiRA attacks
+
+# Random seed for reproducibility
+seed: 42 #optional: Set a random seed for reproducibility (default: 42)
+use_cuda: true  # Whether to use CUDA for training
+
+# Dataset configuration
+dataset:
+  name: cifar10  # Options: cifar10, cifar100, cinic10
+  num_classes: 10  # Options: 10, 100, 43, 10, 1000
+  input_size: 32   # Input size for the model: 32 for training from scratch
+  data_dir: data  # Directory to store datasets
+  pkeep: 0.5  # Probability of keeping a sample as a member
+
+  # Optional random subsample of the train pool. Use to match LT-IQR / RMIA
+  # CINIC-10 setup (50k random samples of 90k). null = use full pool.
+  # When set, a deterministic subsample is built once and saved as
+  # `subsample_indices.npy` in the experiment dir; subsequent runs reuse it.
+  n_data_points: null
+  subsample_seed: 42
+
+  # Data residency for training and RARE-side scoring. With sufficient GPU
+  # memory (CIFAR-shaped sets fit in <1 GB), 'gpu' eliminates the CPU
+  # DataLoader bottleneck and gives ~3-7× speedup. Drop to 'ram' (CPU
+  # DataLoader) if GPU memory is constrained or for CPU-only debug runs.
+  loading: gpu  # 'gpu' (resident) | 'ram' (CPU DataLoader)
+
+
+train_data_augmentation:
+  - random_flip            # Adds input diversity and breaks spatial patterns
+  - random_crop            # Reduces reliance on spatial memorization
+  # - random_rotation        # Randomly rotate the image within a small degree range
+  # - color_jitter           # Reduces sensitivity to color features
+  - normalize              # Essential baseline transformation
+  # - cutout                 # Encourages robustness to occluded features
+  # - mixup                  # Blends samples, reducing overconfident predictions
+  # - cutmix                 # Encourages spatial and semantic robustness
+
+
+# Model configuration
+model:
+  architecture: wrn40-4  # e.g.,  resnet18, resnet20, wrn28-2, wrn40-4, etc.
+  input_channels: 3  # Number of input channels (e.g., 3 for RGB images)
+  cifar_stem: true  # Whether to use CIFAR stem 
+  drop_rate: 0.0 # Dropout rate for the model
+  pretrained: false  # Whether to use pretrained weights
+
+# Training configuration
+training:
+  num_shadow_models: 266 # Number of shadow models to train
+  start_shadow_model_idx: 0 # Start index for shadow models
+  end_shadow_model_idx: 265 # End index for shadow models
+  epochs: 100  # Number of training epochs
+  batch_size: 256  # Batch size for training
+  num_workers: 4  # Number of workers for data loading
+  optimizer: sgd
+  learning_rate: 0.1  # Initial learning rate
+  weight_decay: 5e-4 # Weight decay for regularization
+  momentum: 0.9
+  lr_scheduler: cosine  # Options: cosine
+  save_step: 100  # Save model every n epochs
+  save_models: true
+  early_stopping: false  # Disabled because eval_per_epoch=false; ES needs test_acc/epoch.
+  patience: 100  # Number of epochs to wait for improvement before early stopping
+  resume: false  # Whether to resume training from a checkpoint
+  eval_per_epoch: false  # Skip per-epoch test eval; test loss/acc only at the final epoch.
+                         # Reduces shadow-training wall by ~one test-pass per epoch and
+                         # makes best_model.pth = final-epoch weights (deterministic).
+
+
+target_models: none      # Optional list of target indices (e.g. [0, 25, 50, ...]).
+                         # Consumed by `scripts/train.py --trace-mode loss_only|full`
+                         # to retrain only those indices with per-epoch tracing on,
+                         # writing per_epoch_*.npy into the same model_<t>/ dirs
+                         # after shadow training. Ignored when no --trace-mode is
+                         # set, so shadow training over the full range still works
+                         # from this single config.
+
+
+
+# Experiment configuration
+experiment:
+  log_level: info
+  checkpoint_dir: none  #Options: none to start from scratch or directory to load checkpoints for resume training and/or attack (e.g., experiments/cifar10/wrn28-2/2025-05-12_0056)

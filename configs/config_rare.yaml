@@ -1,0 +1,33 @@
+# RARE configuration — reference training defaults.
+#
+# This file is the canonical reference for hyperparameters used by:
+#   - scripts/rare_train_references.py   (reference training)
+#
+# The locked RARE score is computed directly from saved target/reference
+# loss trajectories as z_M(LT-IQR) + z_M(LT-BTM-R), where z_M normalizes over
+# the target model's candidate members. No AE scoring stage is used.
+
+rare:
+  # ---------------------------------------------------------------------------
+  # Reference training (rare_train_references.py)
+  # Each reference is a model trained on the target's NON-members (with the
+  # flip mechanism moving non-members into the reference's training set as "members").
+  # ---------------------------------------------------------------------------
+  ref_training:
+    num_references: 1                # Number of reference models per target.
+    reference_seeds: [42]             # One seed per ref. Defaults extend as 42, 43, 44, ...
+    cache_tag: "nonmem_shadow_sgd"    # Filename prefix on disk.
+    random_init_after_first: true     # Refs 1..R-1 get fresh random init seeded by reference_seeds[r].
+    flip_nonmember_frac: 1.0          # Fraction of target non-members flipped into reference training set.
+    flip_nonmember_max: 30000         # Cap on flipped count.
+    flip_seed: 0                      # Seed for flip selection (deterministic).
+    save_cache: true                  # Save (ref_losses, ref_margin, ref_pred_class, ref_pred_confidence) + flip_idx.
+    save_model_checkpoints: true      # Save the reference model weights.
+    load_cache: true                  # Skip retraining if cached; --no-load-cache disables.
+    auto_repair_missing_ckpt: true    # If trace exists but checkpoint missing, retrain reference model only.
+    strict_require_all_refs: false    # Hard-error if any ref's checkpoint is missing instead of repairing.
+    shadow_batch_size: 256            # SGD batch size for reference training.
+    shadow_num_workers: 4             # DataLoader workers (CPU path only; GPU-resident path ignores).
+    eval_batch_size: 4096             # Forward batch for per-epoch trace eval.
+    device: "cuda"
+    show_progress: true

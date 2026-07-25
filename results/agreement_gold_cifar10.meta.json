@@ -1,0 +1,24 @@
+{
+  "protocol": "Pollock et al. Appendix C Def. C.1 (agreement gold)",
+  "regime": "Case B: 10 targets, one fixed split (seed 20260718), seeds 43..52",
+  "gold": "LiRA-256 vs original 256-shadow pool, FPR<=1e-4",
+  "sizes": {
+    "per_target": [
+      1389,
+      937,
+      1331,
+      1279,
+      1435,
+      1308,
+      1382,
+      1150,
+      1535,
+      1311
+    ],
+    "union": 1889,
+    "intersection": 609,
+    "V^0.5": 1397,
+    "V^0.8": 1020,
+    "V^1.0": 609
+  }
+}

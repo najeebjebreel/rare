@@ -1,0 +1,40 @@
+REF-LAST comparison summary
+Signed differences are REF-LAST minus the named baseline.
+
+Mode: alone
+CIFAR10:
+  vs REF-FINAL: P@1% +6.03 pp, P@3% +3.63 pp, P@5% +2.86 pp, P@10% +2.63 pp
+  vs REF-MEAN: P@1% -4.55 pp, P@3% -3.77 pp, P@5% -3.17 pp, P@10% -3.09 pp
+  vs LT-BTM-R ($q{=}50%$): P@1% -7.43 pp, P@3% -6.55 pp, P@5% -4.69 pp, P@10% -4.36 pp
+CIFAR100:
+  vs REF-FINAL: P@1% +3.91 pp, P@3% +4.27 pp, P@5% +4.89 pp, P@10% +3.81 pp
+  vs REF-MEAN: P@1% -4.15 pp, P@3% -4.45 pp, P@5% -4.70 pp, P@10% -4.60 pp
+  vs LT-BTM-R ($q{=}50%$): P@1% -6.03 pp, P@3% -7.48 pp, P@5% -7.76 pp, P@10% -6.79 pp
+CINIC10:
+  vs REF-FINAL: P@1% +7.62 pp, P@3% +8.06 pp, P@5% +6.66 pp, P@10% +4.28 pp
+  vs REF-MEAN: P@1% -5.82 pp, P@3% -5.60 pp, P@5% -5.82 pp, P@10% -4.27 pp
+  vs LT-BTM-R ($q{=}50%$): P@1% -9.67 pp, P@3% -10.66 pp, P@5% -11.20 pp, P@10% -8.47 pp
+Avg:
+  vs REF-FINAL: P@1% +5.85 pp, P@3% +5.32 pp, P@5% +4.80 pp, P@10% +3.57 pp
+  vs REF-MEAN: P@1% -4.84 pp, P@3% -4.61 pp, P@5% -4.56 pp, P@10% -3.99 pp
+  vs LT-BTM-R ($q{=}50%$): P@1% -7.71 pp, P@3% -8.23 pp, P@5% -7.88 pp, P@10% -6.54 pp
+
+Mode: combined with LT-IQR
+CIFAR10:
+  vs LT-IQR + REF-FINAL: P@1% +1.92 pp, P@3% +2.17 pp, P@5% +1.98 pp, P@10% +1.81 pp
+  vs LT-IQR + REF-MEAN: P@1% -0.08 pp, P@3% -0.52 pp, P@5% -0.16 pp, P@10% -0.21 pp
+  vs LT-IQR + LT-BTM-R ($q{=}50%$): P@1% -0.60 pp, P@3% -1.92 pp, P@5% -1.43 pp, P@10% -1.32 pp
+CIFAR100:
+  vs LT-IQR + REF-FINAL: P@1% +0.56 pp, P@3% +1.40 pp, P@5% +1.25 pp, P@10% +1.64 pp
+  vs LT-IQR + REF-MEAN: P@1% -0.60 pp, P@3% -0.51 pp, P@5% -1.00 pp, P@10% -0.74 pp
+  vs LT-IQR + LT-BTM-R ($q{=}50%$): P@1% -0.68 pp, P@3% -1.11 pp, P@5% -1.84 pp, P@10% -1.41 pp
+CINIC10:
+  vs LT-IQR + REF-FINAL: P@1% +1.89 pp, P@3% +2.27 pp, P@5% +2.97 pp, P@10% +2.70 pp
+  vs LT-IQR + REF-MEAN: P@1% -0.28 pp, P@3% -0.84 pp, P@5% -1.40 pp, P@10% -1.32 pp
+  vs LT-IQR + LT-BTM-R ($q{=}50%$): P@1% -0.88 pp, P@3% -1.44 pp, P@5% -2.28 pp, P@10% -2.18 pp
+Avg:
+  vs LT-IQR + REF-FINAL: P@1% +1.45 pp, P@3% +1.95 pp, P@5% +2.06 pp, P@10% +2.05 pp
+  vs LT-IQR + REF-MEAN: P@1% -0.32 pp, P@3% -0.62 pp, P@5% -0.85 pp, P@10% -0.76 pp
+  vs LT-IQR + LT-BTM-R ($q{=}50%$): P@1% -0.72 pp, P@3% -1.49 pp, P@5% -1.85 pp, P@10% -1.64 pp
+
+Ordering check: REF-LAST stays below LT-BTM-R on every Avg-column k.

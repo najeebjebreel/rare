@@ -1,0 +1,77 @@
+# Common configuration for membership inference attacks
+plot_metric: 'auc'
+target_fprs: [0.01, 0.001, 0.0001, 0.0]
+privacy_game: privacy_loss_model
+target_models: [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
+# Optional legacy cap on attack pool size (applied AFTER dataset.n_data_points
+# subsampling). Leave unset to use the full (possibly subsampled) train pool.
+# n_data_points: 90000
+
+# Shared settings
+num_shadow_models: 266  # Total models (10 target + 256 reference)
+
+lira:
+  fix_variance: false
+  offline: false
+  num_ref_models: [2, 3, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 128, 256]
+  nb_augmentation: 2   # A=2 (original + horizontal flip) is canonical across all benchmarks (decision 2026-06-10)
+  signal: log-logit-scaling  # Use the actual metric name
+  overwrite_signals: false  # Re-use cached LT-IQR-style signals; only new M values (M=10) will compute.
+  ref_selection_seed: 42
+  use_fast: true            # Vectorized LiRA (NaN-masked numpy nanmedian/nanstd)
+                            # — numerically equivalent to the reference (max
+                            # |Δ| = 9e-5 across CINIC-10 / refs ∈ {256, 64, 16}).
+                            # Mean speedup 6.0x; up to 11x at refs=16 where
+                            # the reference's per-sample Python loop overhead
+                            # dominates.
+
+
+loss:
+  enabled: true
+  nb_augmentation: 1
+
+attackr:
+  num_ref_models: [2, 3, 4, 6, 8, 12, 16, 24, 30, 32, 48, 64, 128]   # max 128: OUT-only refs cap (Attack-R design)
+  nb_augmentation: 1   # Original input only — no horizontal-flip / augmentation. Canonical Attack-R.
+  overwrite_signals: false  # Re-use cached signals; only new M values (M=30) will compute.
+  ref_selection_seed: 42
+  use_fast: true            # Bit-exact reimplementation of Attack-R that
+                            # pre-slices reference tensors and inlines the
+                            # empirical-CDF interp. Validated against
+                            # reference on CINIC-10 across all ref counts:
+                            # max |Δ| = 0.000 (60/60 PASS). Speedup is modest
+                            # (~1.1x) because the per-sample seeded RNG
+                            # dominates and can't be vectorized without
+                            # changing which references get sampled per
+                            # target — breaking numerical equivalence.
+
+rmia:
+  offline: false
+  offline_a: 0.3
+  num_ref_models: [2, 3, 4, 6, 8, 10, 12, 16, 24, 32, 48, 64, 128, 256]
+  # Official RMIA (Zarifzadeh et al. 2024) online config, restricted to 2
+  # augmentations (original + horizontal flip) instead of the paper's 18.
+  augmentation: augmented
+  nb_augmentation: 2
+  top_k: -1
+  signal: sm_taylor_softmax_relative   # soft-margin Taylor-softmax (m, n below)
+  temperature: 2.0       # official: CIFAR-10/CINIC-10 = 2.0, CIFAR-100 = 1.0
+  gamma: 2.0
+  proportiontocut: 0.2   # trimmed mean over reference signals (official)
+  taylor_m: 0.6
+  taylor_n: 4
+  overwrite_signals: false  # Re-use cached signals; only new M values (M=10) will compute.
+  ref_selection_seed: 42
+  use_gpu: true            # Validated against numpy on CINIC-10 (max |Δ| =
+                           # 4e-5 across all samples; well under 1e-4 tol).
+                           # Speedup ~10-13x per target. Numerically
+                           # equivalent for `top_k = -1`; falls back to
+                           # numpy for any other top_k.
+  gpu_chunk_size: 5000     # Per-chunk x-count for the GPU loop. Peak memory
+                           # = chunk_size * P * A * 4 bytes (~9 GB at 5000/25k/18).
+
+experiment:
+  log_level: info
+  checkpoint_dir: experiments/cinic10/wrn28-2/2026-01-21_1044  # Load checkpoints for attack (e.g., experiments/cifar10/wrn28-2/2025-05-12_0056)
+
+
