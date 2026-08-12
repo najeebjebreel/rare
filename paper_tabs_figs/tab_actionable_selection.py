@@ -28,7 +28,7 @@ DEFAULT_BENCHMARKS = {
     "CINIC10": ROOT / "experiments/cinic10/wrn28-2/2026-05-11_0215",
 }
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_actionable_selection.csv"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_actionable_selection.csv"
 METHOD_ORDER = [
     "KMeans-RARE",
     "KMeans-LT-IQR",

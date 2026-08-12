@@ -1,7 +1,7 @@
 """Budget-match sweep with cost model.
 
 For each shadow attack (LiRA, Attack-R, RMIA, Liu-MLP) and each R, compute
-capped Precision@k=k_frac at FPR=1e-4 per target, aggregate across targets,
+Precision@k=k_frac (uncapped, budget ceil(k%*n_mem)) at FPR=1e-4 per target, aggregate across targets,
 and determine TWO matching points vs RARE M=1:
 
   closeness  : argmin_R |mean_precision(R) - precision_RARE_R1|
@@ -70,6 +70,7 @@ def _precision_at_k(scores: np.ndarray, members: np.ndarray,
                     vulnerable: np.ndarray, k_frac: float) -> float:
     pr = tail_metrics_at_k(
         scores, members, [k_frac], vulnerable=vulnerable,
+        cap_k_at_gold=False, k_rounding="ceil",
     )
     return float(pr.iloc[0]["precision"])
 

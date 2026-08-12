@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from rare.analysis.utils import load_rare_locked_scores
+from rare.analysis.utils import load_rare_locked_scores, tail_metrics_at_k
 
 
 DEFAULT_BENCHMARKS = {
@@ -78,21 +78,21 @@ def _threshold_for_fpr(
     return float(desc[min(allowed - 1, len(desc) - 1)])
 
 
-def _capped_precision_at_5(
+def _precision_at_5(
     scores: np.ndarray,
     members: np.ndarray,
     vulnerable: np.ndarray,
 ) -> float:
-    valid_members = np.where(members & np.isfinite(scores))[0]
-    k = max(1, min(int(round(0.05 * len(valid_members))), len(valid_members)))
-    # Canonical capped Precision (matches rare.analysis.utils.tail_metrics_at_k
-    # and tab_main.py): cap k at |V| BEFORE retrieval, then Precision = hits/k.
-    n_vuln = int(vulnerable[valid_members].sum())
-    if n_vuln <= 0:
-        return float("nan")
-    k = min(k, n_vuln)
-    top = valid_members[np.argsort(scores[valid_members])[::-1][:k]]
-    return float(vulnerable[top].sum() / k)
+    """P@5% over a budget of ceil(5% * n_members), no |V| truncation.
+
+    Delegates to the shared metric so this figure cannot drift from
+    tab_main.py / fig_pareto.py.
+    """
+    pr = tail_metrics_at_k(
+        scores, members, [0.05],
+        vulnerable=vulnerable, cap_k_at_gold=False, k_rounding="ceil",
+    )
+    return float(pr.iloc[0]["precision"])
 
 
 def _method_loaders(q: float) -> Dict[str, Callable[[Path, int], np.ndarray]]:
@@ -138,7 +138,7 @@ def collect_rows(
                             "target": int(target),
                             "method": method,
                             "fpr": float(fpr),
-                            "p_at_5": _capped_precision_at_5(
+                            "p_at_5": _precision_at_5(
                                 method_scores[method], members, vulnerable
                             ),
                             "gold_size": int(vulnerable.sum()),

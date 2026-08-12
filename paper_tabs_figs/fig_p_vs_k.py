@@ -98,6 +98,8 @@ def collect_rows(
                     K_FRACS,
                     vulnerable=vulnerable,
                     gold_scores=gold_scores,
+                    cap_k_at_gold=False,
+                    k_rounding="ceil",
                 )
                 for k_frac, (_, metric_row) in zip(K_FRACS, metrics.iterrows()):
                     rows.append(

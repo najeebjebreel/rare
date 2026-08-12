@@ -1,0 +1,31 @@
+\begin{table}[t]
+\centering
+\caption{Agreement-based gold-set robustness on CIFAR-10 / WRN-28-2: P@$k$\% (mean$\pm$std over 10 fixed-split targets) against agreement gold sets $V^{(p)}$ from 10 LiRA-256 audits at FPR$\leq 10^{-4}$. Precision@$k$ retrieves $\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ members and is not truncated at $|V^{(p)}|$, so cells with $|V^{(p)}|<\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ are bounded above by $|V^{(p)}|/\lceil k\cdot n_{\mathrm{mem}}/100\rceil$.}
+\label{tab:agreement-gold}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l l r ccc}
+\toprule
+\textbf{Method} & $p$ & $|V^{(p)}|$ & \textbf{P@1\%} & \textbf{P@3\%} & \textbf{P@5\%} \\
+\midrule
+LiRA-8 & single & 1305 & 0.93{\scriptstyle\pm0.02} & 0.82{\scriptstyle\pm0.04} & 0.72{\scriptstyle\pm0.06} \\
+LiRA-8 & 0.5 & 1397 & 0.93{\scriptstyle\pm0.01} & 0.82{\scriptstyle\pm0.01} & 0.71{\scriptstyle\pm0.01} \\
+LiRA-8 & 0.8 & 1020 & 0.88{\scriptstyle\pm0.02} & 0.72{\scriptstyle\pm0.01} & 0.60{\scriptstyle\pm0.00} \\
+LiRA-8 & 1 & 609 & 0.73{\scriptstyle\pm0.02} & 0.53{\scriptstyle\pm0.01} & 0.40{\scriptstyle\pm0.00} \\
+\midrule
+LT-IQR & single & 1305 & 0.85{\scriptstyle\pm0.03} & 0.71{\scriptstyle\pm0.04} & 0.60{\scriptstyle\pm0.04} \\
+LT-IQR & 0.5 & 1397 & 0.89{\scriptstyle\pm0.01} & 0.77{\scriptstyle\pm0.01} & 0.66{\scriptstyle\pm0.01} \\
+LT-IQR & 0.8 & 1020 & 0.83{\scriptstyle\pm0.01} & 0.66{\scriptstyle\pm0.01} & 0.54{\scriptstyle\pm0.01} \\
+LT-IQR & 1 & 609 & 0.69{\scriptstyle\pm0.02} & 0.48{\scriptstyle\pm0.01} & 0.37{\scriptstyle\pm0.01} \\
+\midrule
+LT-BTM-R & single & 1305 & 0.94{\scriptstyle\pm0.02} & 0.80{\scriptstyle\pm0.04} & 0.68{\scriptstyle\pm0.05} \\
+LT-BTM-R & 0.5 & 1397 & 0.96{\scriptstyle\pm0.00} & 0.85{\scriptstyle\pm0.00} & 0.73{\scriptstyle\pm0.00} \\
+LT-BTM-R & 0.8 & 1020 & 0.92{\scriptstyle\pm0.00} & 0.75{\scriptstyle\pm0.00} & 0.61{\scriptstyle\pm0.00} \\
+LT-BTM-R & 1 & 609 & 0.82{\scriptstyle\pm0.00} & 0.55{\scriptstyle\pm0.00} & 0.42{\scriptstyle\pm0.00} \\
+\midrule
+RARE & single & 1305 & 0.95{\scriptstyle\pm0.02} & 0.82{\scriptstyle\pm0.04} & 0.70{\scriptstyle\pm0.05} \\
+RARE & 0.5 & 1397 & 0.98{\scriptstyle\pm0.01} & 0.88{\scriptstyle\pm0.01} & 0.77{\scriptstyle\pm0.00} \\
+RARE & 0.8 & 1020 & 0.95{\scriptstyle\pm0.01} & 0.79{\scriptstyle\pm0.01} & 0.64{\scriptstyle\pm0.00} \\
+RARE & 1 & 609 & 0.84{\scriptstyle\pm0.01} & 0.58{\scriptstyle\pm0.01} & 0.43{\scriptstyle\pm0.00} \\
+\bottomrule
+\end{tabular}
+\end{table}

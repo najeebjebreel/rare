@@ -52,7 +52,7 @@ DEFAULT_BENCHMARKS = {
     "CIFAR100": ROOT / "experiments/cifar100/wrn28-2/2025-12-25_0121",
     "CINIC10": ROOT / "experiments/cinic10/wrn28-2/2026-05-11_0215",
 }
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_pipeline_cost.tex"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_pipeline_cost.tex"
 
 _ID_RE = re.compile(r"(?:target|shadow)_(\d+)$")
 _REF0_RE = re.compile(r"target_(\d+)_ref_0$")
@@ -70,8 +70,8 @@ def _load_runtime_rows(path: Path):
                 sec = float(row[3])
             except ValueError:
                 continue
-            rows.append({"phase": row[1], "item": row[2], "sec": sec,
-                         "extra": row[4:]})
+            rows.append({"ts": row[0], "phase": row[1], "item": row[2],
+                         "sec": sec, "extra": row[4:]})
     return rows
 
 
@@ -196,8 +196,14 @@ def collect(exp: Path):
         return Stat([r["sec"] for r in _dedup_last(sel)])
 
     lt_iqr_score = phase_stat("lt_iqr_score")
+    # The 2026-07-24 liu_mlp_score batch is excluded: 21 rows tightly
+    # clustered at 82-87 s against 5.7-6.8 s for identical work (same arch,
+    # dataset, loading and n_data_points, R=1) on every benchmark. The
+    # spread is too tight for GPU contention, so those runs measured a
+    # different code path and are not comparable to the rest of the log.
     liu_score = phase_stat("liu_mlp_score",
-                           lambda r: r["extra"] and r["extra"][0] == "1")
+                           lambda r: r["extra"] and r["extra"][0] == "1"
+                           and not r["ts"].startswith("2026-07-24"))
     rare_score = Stat.combine(phase_stat("anomaly_ltiqr"),
                               phase_stat("anomaly_rare"))
 

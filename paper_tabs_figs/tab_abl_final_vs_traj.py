@@ -12,7 +12,7 @@ and evaluate each (a) alone and (b) combined as z_M(stat)+z_M(LT-IQR) (the locke
 RARE form). Capped P@{1,3,5,10}% under LiRA-256 gold @FPR<=1e-4, mean+/-std over
 the 10 targets, plus cross-dataset average.
 
-Outputs: figures/tab_abl_final_vs_trajectory.{csv,tex}. CPU-only; nothing is
+Outputs: tables/tab_abl_final_vs_trajectory.{csv,tex}. CPU-only; nothing is
 retrained.
 
 Usage:
@@ -36,8 +36,8 @@ for p in (str(ROOT), str(ROOT / "scripts")):
         sys.path.insert(0, p)
 
 from rare.analysis.utils import (  # noqa: E402
-    score_avg_min_q_reference_losses, score_ltiqr_trajectory,
-    _zscore_ignore_nan, tail_metrics_at_k)
+    score_avg_min_q_reference_losses, score_avg_max_q_reference_losses,
+    score_ltiqr_trajectory, _zscore_ignore_nan, tail_metrics_at_k)
 
 _spec = importlib.util.spec_from_file_location("mt", ROOT / "scripts" / "main_table.py")
 mt = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(mt)
@@ -48,16 +48,30 @@ BENCHMARKS = {
     "CINIC10": ROOT / "experiments/cinic10/wrn28-2/2026-05-11_0215",
 }
 TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-K_FRACS = [0.01, 0.03, 0.05, 0.10]
-K_LABELS = ["P@1%", "P@3%", "P@5%", "P@10%"]
+K_FRACS = [0.01, 0.03, 0.05]
+K_LABELS = ["P@1%", "P@3%", "P@5%"]
 FPR = 1e-4
+Q = 0.50
 _REF = re.compile(r"^ref_losses_E(\d+)_(.+)_ref0\.npy$")
 
-# (row label, builder(ref_stats, lt_iqr, members) -> score over N (NaN off-member))
-ROW_ORDER = ["LT-IQR", "REF-FINAL", "CALIB-FINAL", "REF-MEAN",
-             "LT-BTM-R ($q{=}50\\%$)",
-             "LT-IQR + REF-FINAL", "LT-IQR + CALIB-FINAL", "LT-IQR + REF-MEAN",
-             "\\rare{} (LT-IQR + LT-BTM-R)"]
+# Three blocks: the target-only baseline, the eight reference-side statistics
+# alone, then each combined with LT-IQR as z_M(.)+z_M(LT-IQR).
+#   position-dependent : REF-FINAL, CALIB-FINAL, REF-LAST
+#   order-invariant    : REF-MAX, REF-MIN, REF-MEAN, LT-TOP-R, LT-BTM-R
+# REF-MIN / LT-BTM-R / REF-MEAN are the B_q in {1, E/2, E} members of the
+# lower-tail family; REF-LAST averages the same count as LT-BTM-R but selects
+# by position rather than by loss value.
+BASELINE_ROW = "LT-IQR"
+ALONE_ROWS = ["REF-FINAL", "CALIB-FINAL", "REF-LAST", "REF-MAX",
+              "REF-MIN ($B_q{=}1$)", "REF-MEAN ($B_q{=}E$)",
+              "LT-TOP-R ($q{=}50\\%$)", "LT-BTM-R ($q{=}50\\%$)"]
+COMBINED_ROWS = ["LT-IQR + REF-FINAL", "LT-IQR + CALIB-FINAL",
+                 "LT-IQR + REF-LAST", "LT-IQR + REF-MAX",
+                 "LT-IQR + REF-MIN", "LT-IQR + REF-MEAN",
+                 "LT-IQR + LT-TOP-R", "\\rare{} (LT-IQR + LT-BTM-R)"]
+ROW_ORDER = [BASELINE_ROW] + ALONE_ROWS + COMBINED_ROWS
+# \midrule is emitted after each of these rows.
+MIDRULE_AFTER = {BASELINE_ROW, ALONE_ROWS[-1]}
 def _load_traj(exp: Path, t: int):
     """(reference traj (N,E), target traj (N,E), members mask)."""
     td = exp / f"model_{t}"
@@ -73,13 +87,22 @@ def _stats(ref, tgt):
     ref_final = ref[:, -1].astype(np.float32)
     tgt_final = tgt[:, -1].astype(np.float32)
     ref_mean = score_avg_min_q_reference_losses([ref], q=1.0)
-    lt_btm_r = score_avg_min_q_reference_losses([ref], q=0.50)
+    lt_btm_r = score_avg_min_q_reference_losses([ref], q=Q)
+    lt_top_r = score_avg_max_q_reference_losses([ref], q=Q)
     lt_iqr = score_ltiqr_trajectory(tgt)
     # Watson-style difficulty calibration at the final epoch: ref - target loss.
     calib_final = (ref_final - tgt_final).astype(np.float32)
+    # REF-LAST: mean over the final half of training, by position. Same
+    # checkpoint count as LT-BTM-R (E even), selected by epoch not by value.
+    start = ref.shape[1] // 2
+    ref_last = ref[:, start:].mean(axis=1).astype(np.float32)
+    assert ref.shape[1] - start == max(1, int(round(Q * ref.shape[1]))), \
+        "REF-LAST and LT-BTM-R must average the same number of checkpoints"
     return {"REF-FINAL": ref_final, "TGT-FINAL": tgt_final,
-            "CALIB-FINAL": calib_final, "REF-MEAN": ref_mean,
-            "LT-BTM-R": lt_btm_r, "LT-IQR": lt_iqr}
+            "CALIB-FINAL": calib_final, "REF-LAST": ref_last,
+            "REF-MEAN": ref_mean, "REF-MIN": ref.min(axis=1).astype(np.float32),
+            "REF-MAX": ref.max(axis=1).astype(np.float32),
+            "LT-BTM-R": lt_btm_r, "LT-TOP-R": lt_top_r, "LT-IQR": lt_iqr}
 
 
 def _masked(x, members):
@@ -88,26 +111,32 @@ def _masked(x, members):
     return out
 
 
+# Row label -> key in the _stats dict. Labels may carry a parenthetical
+# annotation (e.g. "REF-MIN ($B_q{=}1$)"), so match on the leading token.
+_STAT_OF = ["REF-FINAL", "CALIB-FINAL", "REF-LAST", "REF-MEAN", "REF-MIN",
+            "REF-MAX", "LT-BTM-R", "LT-TOP-R", "LT-IQR"]
+
+
+def _stat_key(label: str) -> str:
+    for key in _STAT_OF:
+        if label.startswith(key):
+            return key
+    raise ValueError(f"no statistic matches row label {label!r}")
+
+
 def _row_score(label, s, members):
-    if label == "LT-IQR":
-        return _masked(s["LT-IQR"], members)
-    if label == "REF-FINAL":
-        return _masked(s["REF-FINAL"], members)
-    if label == "CALIB-FINAL":            # standalone: rank by raw score, no z
-        return _masked(s["CALIB-FINAL"], members)
-    if label == "REF-MEAN":
-        return _masked(s["REF-MEAN"], members)
-    if label.startswith("LT-BTM-R"):
-        return _masked(s["LT-BTM-R"], members)
-    if label == "LT-IQR + REF-FINAL":
-        return _zscore_ignore_nan(s["REF-FINAL"], members) + _zscore_ignore_nan(s["LT-IQR"], members)
-    if label == "LT-IQR + CALIB-FINAL":
-        return _zscore_ignore_nan(s["CALIB-FINAL"], members) + _zscore_ignore_nan(s["LT-IQR"], members)
-    if label == "LT-IQR + REF-MEAN":
-        return _zscore_ignore_nan(s["REF-MEAN"], members) + _zscore_ignore_nan(s["LT-IQR"], members)
+    # Combined rows: z_M(stat) + z_M(LT-IQR).
     if label.startswith("\\rare"):
-        return _zscore_ignore_nan(s["LT-BTM-R"], members) + _zscore_ignore_nan(s["LT-IQR"], members)
-    raise ValueError(label)
+        return (_zscore_ignore_nan(s["LT-BTM-R"], members)
+                + _zscore_ignore_nan(s["LT-IQR"], members))
+    if label.startswith("LT-IQR + "):
+        key = _stat_key(label[len("LT-IQR + "):])
+        return (_zscore_ignore_nan(s[key], members)
+                + _zscore_ignore_nan(s["LT-IQR"], members))
+    # Standalone rows: rank by the raw statistic, no z-scoring.
+    if label not in ROW_ORDER:
+        raise ValueError(label)
+    return _masked(s[_stat_key(label)], members)
 
 
 def evaluate():
@@ -124,7 +153,8 @@ def evaluate():
             assert np.array_equal(mem_mask, members)
             for lab in ROW_ORDER:
                 pr = tail_metrics_at_k(_row_score(lab, s, members), members, K_FRACS,
-                                       vulnerable=vulnerable, gold_scores=gold)
+                                       vulnerable=vulnerable, gold_scores=gold,
+                                       cap_k_at_gold=False, k_rounding="ceil")
                 results[ds][lab].append([float(pr.iloc[i]["precision"])
                                          for i in range(len(K_FRACS))])
             # REF-FINAL (reference) vs the LOSS baseline (target final loss).
@@ -170,11 +200,14 @@ def write_outputs(results, out_dir: Path):
         ds_means = np.asarray(ds_means)
         cell_mean[lab][-1] = ds_means.mean(0); cell_std[lab][-1] = ds_means.std(0, ddof=1)
 
-    # bold best per (dataset-block, k) column
+    # Bold the best per (dataset-block, k) column, including ties, decided at
+    # full precision; displayed values are rounded to two decimals.
     best = {}
     for blk in range(len(ds_names) + 1):
         for j in range(nk):
-            best[(blk, j)] = max(ROW_ORDER, key=lambda L: cell_mean[L][blk, j])
+            top = max(cell_mean[L][blk, j] for L in ROW_ORDER)
+            best[(blk, j)] = {L for L in ROW_ORDER
+                              if cell_mean[L][blk, j] >= top - 1e-12}
 
     # ---- CSV (long) ----
     import csv as _csv
@@ -195,17 +228,18 @@ def write_outputs(results, out_dir: Path):
         "\\begin{table*}[t]", "\\centering",
         "\\caption{Reference final-epoch loss vs.\\ trajectory statistics for the"
         " reference-side signal. Each statistic alone and combined with LT-IQR as"
-        " $z_M(\\cdot)+z_M(\\mathrm{LT\\text{-}IQR})$. Capped P@$k$ under LiRA-256"
-        " gold at FPR$\\le10^{-4}$, mean$\\pm$std over 10 targets.}",
+        " $z_M(\\cdot)+z_M(\\mathrm{LT\\text{-}IQR})$. LT-TOP-R is the top-$q$"
+        " mirror of LT-BTM-R. P@$k$ under LiRA-256 gold at FPR$\\le10^{-4}$,"
+        " mean$\\pm$std over 10 targets.}",
         "\\label{tab:abl-final-vs-traj}",
         "\\setlength{\\tabcolsep}{3pt}", "\\renewcommand{\\arraystretch}{1.05}",
         "\\resizebox{\\textwidth}{!}{%",
-        "\\begin{tabular}{l cccc cccc cccc cccc}", "\\toprule",
+        "\\begin{tabular}{l ccc ccc ccc ccc}", "\\toprule",
         "\\multirow{2}{*}{\\textbf{Score}}"
-        + "".join(f"  & \\multicolumn{{4}}{{c}}{{\\textbf{{{n}}}}}"
+        + "".join(f"  & \\multicolumn{{3}}{{c}}{{\\textbf{{{n}}}}}"
                   for n in ds_names + ["Avg."]) + " \\\\",
-        "\\cmidrule(lr){2-5} \\cmidrule(lr){6-9} \\cmidrule(lr){10-13} \\cmidrule(lr){14-17}",
-        " " + " ".join("& \\textbf{P@1\\%} & \\textbf{P@3\\%} & \\textbf{P@5\\%} & \\textbf{P@10\\%}"
+        "\\cmidrule(lr){2-4} \\cmidrule(lr){5-7} \\cmidrule(lr){8-10} \\cmidrule(lr){11-13}",
+        " " + " ".join("& \\textbf{P@1\\%} & \\textbf{P@3\\%} & \\textbf{P@5\\%}"
                        for _ in range(4)) + " \\\\",
         "\\midrule",
     ]
@@ -214,12 +248,12 @@ def write_outputs(results, out_dir: Path):
         for blk in range(len(ds_names) + 1):
             for j in range(nk):
                 cells.append(_cell(cell_mean[lab][blk, j], cell_std[lab][blk, j],
-                                   best[(blk, j)] == lab))
+                                   lab in best[(blk, j)]))
         block = [cells[0]]
         for blk in range(len(ds_names) + 1):
             block.append("& " + " & ".join(cells[1 + blk * nk:1 + (blk + 1) * nk]))
         lines.append("\n".join(block) + " \\\\")
-        if lab in ("LT-BTM-R ($q{=}50\\%$)",):   # separate "alone" block from "combined"
+        if lab in MIDRULE_AFTER:   # block separators
             lines.append("\\midrule")
     lines += ["\\bottomrule", "\\end{tabular}}", "\\end{table*}"]
     (out_dir / "tab_abl_final_vs_trajectory.tex").write_text("\n".join(lines) + "\n")
@@ -231,7 +265,7 @@ def _format_row(lab, cell_mean, cell_std, best, n_ds, nk):
     for blk in range(n_ds + 1):
         for j in range(nk):
             cells.append(_cell(cell_mean[lab][blk, j], cell_std[lab][blk, j],
-                               best[(blk, j)] == lab))
+                               lab in best[(blk, j)]))
     block = [cells[0]]
     for blk in range(n_ds + 1):
         block.append("& " + " & ".join(cells[1 + blk * nk:1 + (blk + 1) * nk]))
@@ -240,7 +274,7 @@ def _format_row(lab, cell_mean, cell_std, best, n_ds, nk):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out-dir", type=Path, default=ROOT / "paper_tabs_figs/figures")
+    ap.add_argument("--out-dir", type=Path, default=ROOT / "paper_tabs_figs/tables")
     args = ap.parse_args()
 
     results, diag = evaluate()

@@ -90,9 +90,38 @@ def lira_sig(logits_NAC, labels_t):
     return out
 
 
-def rmia_sig(logits_NAC, labels_t):
-    # RMIA signal = raw target-class logit (metric 'target_logit'), view 0.
-    return convert_signals(logits_NAC[:, 0, :], labels_t, "target_logit", 1.0).reshape(-1, 1)
+def rmia_signal_spec(exp):
+    """(metric, temp, extra, n_views) for RMIA, as attacks.py builds it.
+
+    attacks.py maps the config's `rmia.signal` name onto a convert_signals
+    metric plus extras, applies `rmia.temperature`, and writes one column per
+    augmentation view (`rmia.nb_augmentation`). Reproduce all three here or
+    the cached signals cannot be matched.
+    """
+    r = yaml.safe_load(open(exp / "attack_config.yaml"))["rmia"]
+    name = r.get("signal", "target_logit")
+    if name == "softmax_relative":
+        metric, extra = "softmax", None
+    elif name == "taylor_softmax_relative":
+        metric, extra = "taylor", {"taylor_n": r["taylor_n"]}
+    elif name == "sm_softmax_relative":
+        metric, extra = "soft-margin", {"taylor_m": r["taylor_m"]}
+    elif name == "sm_taylor_softmax_relative":
+        metric, extra = ("taylor-soft-margin",
+                         {"taylor_m": r["taylor_m"], "taylor_n": r["taylor_n"]})
+    else:
+        metric, extra = name, None
+    return metric, float(r.get("temperature", 1.0)), extra, int(r.get("nb_augmentation", 1))
+
+
+def rmia_sig(logits_NAC, labels_t, metric, temp, extra, n_views):
+    """RMIA signal, one column per augmentation view (matches attacks.py)."""
+    a_use = min(int(n_views), logits_NAC.shape[1])
+    out = torch.empty(logits_NAC.shape[0], a_use, dtype=torch.float32)
+    for a in range(a_use):
+        out[:, a] = convert_signals(
+            logits_NAC[:, a, :], labels_t, metric=metric, temp=temp, extra=extra)
+    return out
 
 
 def attackr_sig(logits_NAC, y_np):
@@ -158,8 +187,10 @@ def evaluate_benchmark(name, exp, taus, targets):
     util = {tau: [] for tau in taus}
     sanity = []
 
+    rmia_metric, rmia_temp, rmia_extra, rmia_views = rmia_signal_spec(exp)
     sig_fn = {"lira": lambda L: lira_sig(L, labels_t),
-              "rmia": lambda L: rmia_sig(L, labels_t),
+              "rmia": lambda L: rmia_sig(L, labels_t, rmia_metric, rmia_temp,
+                                         rmia_extra, rmia_views),
               "attackr": lambda L: attackr_sig(L, y_np)}
 
     for t in targets:
@@ -186,9 +217,9 @@ def evaluate_benchmark(name, exp, taus, targets):
         else:
             rl2 = gen_logits(gen2, ref_ckpt)                 # (N, 2, C)
 
-        # LiRA uses both A=2 views; RMIA/Attack-R use view 0 only (as attacks.py).
-        base_basis = {"lira": tl2, "rmia": tl2[:, :1, :], "attackr": tl2[:, :1, :]}
-        ref_basis = {"lira": rl2, "rmia": rl2[:, :1, :], "attackr": rl2[:, :1, :]}
+        # LiRA and RMIA use both A=2 views; Attack-R uses view 0 only (as attacks.py).
+        base_basis = {"lira": tl2, "rmia": tl2, "attackr": tl2[:, :1, :]}
+        ref_basis = {"lira": rl2, "rmia": rl2, "attackr": rl2[:, :1, :]}
 
         # Baseline (tau-independent) per attack: cached signal + sanity gate.
         base = {}
@@ -252,6 +283,15 @@ def main():
         t0 = time.time()
         agg, util, sanity = evaluate_benchmark(name, BENCHMARKS[name], taus, args.targets)
         max_sanity = max(max(s.values()) for s in sanity)
+        if max_sanity > 1e-3:
+            # Same hard gate as tab_defense.py: if the undefended pipeline does
+            # not reproduce the cached signals, every before/after number below
+            # is meaningless, so refuse to print them.
+            raise SystemExit(
+                f"SANITY GATE FAILED for {name}: max|Δsignal| = {max_sanity:.2e} "
+                f"(tolerance 1e-3). Recomputed attack signals do not match "
+                f"<exp>/signals/*.npy; results suppressed."
+            )
         print(f"\n===== {name.upper()} (all members, {time.time()-t0:.0f}s, "
               f"baseline sanity max|Δsig|={max_sanity:.1e}) =====")
         for tau in taus:

@@ -1,11 +1,12 @@
 """Generate the cross-architecture generalization LaTeX table (tab:cross-arch).
 
 CIFAR-10 only; the target backbone varies across ResNet-20, WRN-28-2, and
-WRN-40-4. Every cell is capped Precision @ k in {1, 3, 5}% under that
+WRN-40-4. Every cell is Precision @ k in {1, 3, 5}% under that
 architecture's own LiRA-256 gold (hits at the FPR threshold, intersected
-with members), mean +/- std over the 10 targets; the Avg column is the
-mean +/- std over the three architecture means. Best per column is bold,
-second best underlined.
+with members), over a retrieval budget of ceil(k% * n_members); mean +/-
+std over the 10 targets; the Avg column is the mean +/- std over the
+three architecture means. Best per column is bold, second best
+underlined.
 
 Usage:
   python paper_tabs_figs/tab_cross_arch.py
@@ -37,7 +38,7 @@ BENCHMARKS = {
     "WRN-40-4": ROOT / "experiments/cifar10/wrn40-4/2026-01-24_2029",
 }
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_cross_arch.tex"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_cross_arch.tex"
 K_FRACS = [0.01, 0.03, 0.05]
 
 METHODS = [
@@ -66,6 +67,7 @@ def precision_at_k(exp: Path, targets, loader, fpr: float) -> np.ndarray:
         pr = _mt.tail_metrics_at_k(
             loader(exp, t), members, K_FRACS,
             vulnerable=vulnerable, gold_scores=gold_scores,
+            cap_k_at_gold=False, k_rounding="ceil",
         )
         out.append([float(pr.iloc[i]["precision"]) for i in range(len(K_FRACS))])
     return np.asarray(out)

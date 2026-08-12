@@ -10,7 +10,8 @@ Columns:
   AUC, TPR     attack-level metrics (TPR at the gold FPR), mean +/- std
                over the 10 targets; trajectory rankers (LT-IQR, RARE)
                have no member/non-member score and show ---.
-  P@k          capped Precision @ k in {1,3,5}% against the Union gold.
+  P@k          Precision @ k in {1,3,5}% against the Union gold, over a
+               retrieval budget of ceil(k% * n_members).
   Speedup      cost(Union gold) / cost(method), from the same runtime-log
                cost model as tab:pipeline-cost. cost(Union gold) =
                cost(LiRA-256) + cost(RMIA-256) + cost(Attack-R-128).
@@ -48,12 +49,12 @@ _spec.loader.exec_module(_mt)
 
 DEFAULT_EXP = tpc.DEFAULT_BENCHMARKS["CIFAR10"]
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_union_cifar10.tex"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_union_cifar10.tex"
 K_FRACS = [0.01, 0.03, 0.05]
 UNION_ATTACKS = [("lira_refs", 256), ("rmia_refs", 256), ("attackr_refs", 128)]
-SWEEP = {"LiRA": [2, 4, 8, 16, 32, 64, 128, 256],
-         "RMIA": [2, 4, 8, 16, 32, 64, 128, 256],
-         "Attack-R": [2, 4, 8, 16, 32, 64, 128]}
+SWEEP = {"LiRA": [2, 4, 8, 16, 256],
+         "RMIA": [2, 4, 8, 16, 256],
+         "Attack-R": [2, 4, 8, 16, 128]}
 GEN_AUG = {"LiRA": 2, "RMIA": 1, "Attack-R": 1}
 RARE_MS = [1, 2, 4]
 _REFIDX_RE = re.compile(r"target_(\d+)_ref_(\d+)$")
@@ -140,7 +141,7 @@ def main():
     c, attack_cost, rare_cost, union_cost = build_costs(exp)
 
     def evaluate(loader, with_attack_metrics):
-        """Per-target AUC/TPR and capped P@k against the Union gold."""
+        """Per-target AUC/TPR and P@k against the Union gold."""
         aucs, tprs, pks = [], [], []
         for t in args.targets:
             labels, V = gold[t]
@@ -148,7 +149,9 @@ def main():
             if with_attack_metrics:
                 a, tp = attack_auc_tpr(scores, labels, args.fpr)
                 aucs.append(a); tprs.append(tp)
-            pr = _mt.tail_metrics_at_k(scores, labels, K_FRACS, vulnerable=V)
+            pr = _mt.tail_metrics_at_k(
+                scores, labels, K_FRACS, vulnerable=V,
+                cap_k_at_gold=False, k_rounding="ceil")
             pks.append([float(pr.iloc[i]["precision"])
                         for i in range(len(K_FRACS))])
         pks = np.asarray(pks)
@@ -192,10 +195,10 @@ def main():
         "\\centering",
         "\\caption{CIFAR10 sweep under the fixed Union gold set, defined as the"
         " union of vulnerable members detected by LiRA-256, RMIA-256, and"
-        f" Attack-R-128 at FPR$\\leq {fpr_tex}$. \\rare{{}} is shown for"
-        " $M\\in\\{1,2,4\\}$ with $q=50\\%$, and reference attacks are swept"
-        " over $M$. Speedup is relative to constructing the full Union gold"
-        " set.}",
+        f" Attack-R-128 at FPR$\\leq {fpr_tex}$. LiRA and RMIA are shown for"
+        " $M\\in\\{2,4,8,16,256\\}$, Attack-R for $M\\in\\{2,4,8,16,128\\}$,"
+        " and \\rare{} for $M\\in\\{1,2,4\\}$ with $q=50\\%$. Speedup is"
+        " relative to constructing the full Union gold set.}",
         "\\label{tab:union-cifar10}",
         "\\setlength{\\tabcolsep}{4pt}",
         "\\renewcommand{\\arraystretch}{1.05}",

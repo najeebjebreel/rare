@@ -2,10 +2,11 @@
 
 Rebuilds every cell from on-disk artifacts:
 
-  P@k cells   capped Precision @ k in {1, 3, 5}% under LiRA-256 gold
-              (hits at the FPR threshold, intersected with members),
-              mean +/- std over the 10 targets per dataset; the Avg
-              column is the mean +/- std over the three dataset means.
+  P@k cells   Precision @ k in {1, 3, 5}% under LiRA-256 gold (hits at
+              the FPR threshold, intersected with members), mean +/- std
+              over the 10 targets per dataset; the Avg column is the mean
+              +/- std over the three dataset means. The retrieval budget
+              is ceil(k% * n_members).
   Speedup     cross-dataset mean of the per-dataset pipeline speedups
               from paper_tabs_figs/tab_pipeline_cost.py (same runtime
               logs as tab:pipeline-cost) -- relative to LiRA-256.
@@ -39,7 +40,7 @@ _mt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mt)
 
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_main.tex"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_main.tex"
 K_FRACS = [0.01, 0.03, 0.05]
 K_LABELS = ["P@1\\%", "P@3\\%", "P@5\\%"]
 
@@ -64,7 +65,10 @@ GROUP_BREAKS = {"LT-IQR (M=0)", "\\rare{} (M=1)"}  # \midrule before these rows
 
 
 def precision_at_k(exp: Path, targets, method_loader, fpr: float):
-    """Per-target capped P@k under LiRA-256 gold; returns (T, len(K_FRACS))."""
+    """Per-target P@k under LiRA-256 gold; returns (T, len(K_FRACS)).
+
+    Precision@k over a retrieval budget of ceil(k% * n_members).
+    """
     out = []
     for t in targets:
         gold_scores, members, vulnerable = _mt._load_lira_gold(exp, t, fpr)
@@ -72,6 +76,7 @@ def precision_at_k(exp: Path, targets, method_loader, fpr: float):
         pr = _mt.tail_metrics_at_k(
             scores, members, K_FRACS,
             vulnerable=vulnerable, gold_scores=gold_scores,
+            cap_k_at_gold=False, k_rounding="ceil",
         )
         out.append([float(pr.iloc[i]["precision"]) for i in range(len(K_FRACS))])
     return np.asarray(out)
@@ -148,7 +153,9 @@ def main():
         "\\centering",
         "\\caption{Main results on CIFAR10, CIFAR100, and CINIC10 under LiRA-256"
         " gold. \\rare{} uses $M{=}1$ and $q=50\\%$; reference baselines use the"
-        " budgets shown in the method names.}",
+        " budgets shown in the method names; avg.\\ entries are the mean and"
+        " standard deviation across the three datasets. Bold denotes the best"
+        " and underline the second best in each column.}",
         "\\label{tab:main}",
         "\\setlength{\\tabcolsep}{3pt}",
         "\\renewcommand{\\arraystretch}{1.05}",

@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from rare.analysis.utils import score_avg_min_q_reference_losses
+from rare.analysis.utils import _budget_at_frac, score_avg_min_q_reference_losses
 
 
 DEFAULT_EXPERIMENT = ROOT / "experiments/cifar10/wrn28-2/2025-12-07_0140"
@@ -103,8 +103,14 @@ def _method_scores(exp: Path, target: int, members: np.ndarray, num_refs: int, q
 
 
 def _top_indices(scores: np.ndarray, members: np.ndarray, top_frac: float) -> np.ndarray:
+    """Top-k member indices, k = ceil(top_frac * n_valid_members).
+
+    Uses the shared budget helper so the retrieval depth matches the
+    Precision@k convention in rare.analysis.utils (no |V| truncation here:
+    this figure counts overlap at a fixed budget, it is not a capped metric).
+    """
     valid_members = np.where(members & np.isfinite(scores))[0]
-    k = max(0, min(int(round(float(top_frac) * len(valid_members))), len(valid_members)))
+    k = _budget_at_frac(float(top_frac), len(valid_members), "ceil")
     if k == 0:
         return np.asarray([], dtype=np.int64)
     return valid_members[np.argsort(scores[valid_members])[::-1][:k]]

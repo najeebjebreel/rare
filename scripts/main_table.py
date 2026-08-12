@@ -49,7 +49,7 @@ import pandas as pd
 from rare.analysis.utils import load_rare_locked_scores, tail_metrics_at_k
 
 
-FPR_DEFAULT = 1e-4   # gold-V FPR default for the capped Precision and Tail-ρ
+FPR_DEFAULT = 1e-4   # gold-V FPR default for Precision and Tail-ρ
 K_FRACS = [0.01, 0.03, 0.05, 0.10]
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
 LIU_MLP_R_DEFAULT = 4  # only used as a fallback if budget_match has no Liu-MLP row
@@ -102,10 +102,14 @@ def _load_lira_gold(exp: Path, t: int, fpr: float):
 
 
 def _per_target_metrics(scores, members, vulnerable, lira_gold_scores):
-    """Capped Precision @ {1,3,5,10}% and Tail-ρ vs LiRA-256."""
+    """Precision @ {1,3,5,10}% and Tail-ρ vs LiRA-256.
+
+    Precision uses a retrieval budget of ceil(k% * n_members), untruncated.
+    """
     pr = tail_metrics_at_k(
         scores, members, K_FRACS,
         vulnerable=vulnerable, gold_scores=lira_gold_scores,
+        cap_k_at_gold=False, k_rounding="ceil",
     )
     return {
         "P@1%":    float(pr.iloc[0]["precision"]),

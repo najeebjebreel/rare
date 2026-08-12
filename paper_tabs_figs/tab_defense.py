@@ -39,7 +39,7 @@ de = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(de)
 
 import tab_pipeline_cost as tpc  # noqa: E402  (RARE per-target pipeline cost)
 
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_defense.tex"
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_defense.tex"
 TARGETS = de.TARGETS
 TAU = 2.0
 DISPLAY = {"cifar10": "CIFAR-10", "cifar100": "CIFAR-100", "cinic10": "CINIC-10"}
@@ -95,10 +95,14 @@ def main():
         " logits $(1{-}\\alpha)\\ell^{T}+\\alpha\\ell^{R}$, $\\alpha=\\sigma(\\mathrm{RARE}/\\tau)$,"
         " $\\tau{=}2$, applied to all members; test queries untouched). Before"
         " $\\to$ after the defense. Train Acc is over members; Test Acc is"
-        " unchanged by construction. Runtime is the full per-target"
-        " identify-and-protect cost: the RARE pipeline (Table~\\ref{tab:pipeline-cost})"
-        " plus the per-member blend (the reference and its logits are produced"
-        " within RARE; the blend is $O(C)$ and negligible).}",
+        " unchanged by construction. Runtime is the per-target"
+        " identify-and-protect cost \\emph{on top of an already-trained"
+        " target}: the RARE pipeline (Table~\\ref{tab:pipeline-cost}) --"
+        " reference retrain plus the target's trace overhead -- and the"
+        " per-member blend. Training the target itself is excluded, as is"
+        " the case for every method in Table~\\ref{tab:pipeline-cost}. The"
+        " reference and its logits are produced within RARE; the blend is"
+        " $O(C)$ and negligible.}",
         "\\label{tab:defense}",
         "\\setlength{\\tabcolsep}{4pt}",
         "\\renewcommand{\\arraystretch}{1.05}",
@@ -121,16 +125,28 @@ def main():
     # Note: TPR@1e-5 reported in the running text; kept out of the table to fit.
 
     prose = []
+    tpr4_after_per_target = {}
+    n_members = {}
     for name in de.BENCHMARKS:
         exp = de.BENCHMARKS[name]
         agg, util, sanity = de.evaluate_benchmark(name, exp, [TAU], TARGETS)
         max_sanity = max(max(s.values()) for s in sanity)
         if max_sanity > 1e-3:
-            print(f"WARNING: {name} baseline sanity {max_sanity:.2e} -- numbers "
-                  f"may be off (regenerate ref_logits).", file=sys.stderr)
+            # Hard failure: the undefended pipeline must reproduce the cached
+            # attack signals exactly, or every before/after number in this
+            # table is meaningless. Never write a table past this point.
+            worst = max(((v, at) for s in sanity for at, v in s.items()))
+            raise SystemExit(
+                f"SANITY GATE FAILED for {name}: max|Δsignal| = {max_sanity:.2e} "
+                f"(tolerance 1e-3), worst attack = {worst[1]}. The recomputed "
+                f"attack signal does not match <exp>/signals/*.npy, so the "
+                f"defended numbers cannot be trusted. Nothing was written."
+            )
         tr_b = np.mean([u[0] for u in util[TAU]]) * 100
         tr_a = np.mean([u[1] for u in util[TAU]]) * 100
         te_m, _ = _mean_metrics_csv(exp, "Test_acc (%)")
+        _keep = np.load(exp / "keep_indices.npy").astype(bool)
+        n_members[name] = [int(_keep[t].sum()) for t in TARGETS]
         import yaml as _yaml
         ncls = int(_yaml.safe_load(open(exp / "logit_config.yaml"))["dataset"]["num_classes"])
         runtime = _rare_total_sec(name) + _blend_sec(ncls)   # RARE total + blend
@@ -141,6 +157,7 @@ def main():
             t3b, t3a = b[:, 1].mean(), d[:, 1].mean()
             t4b, t4a = b[:, 2].mean(), d[:, 2].mean()
             t5b, t5a = b[:, 3].mean(), d[:, 3].mean()
+            tpr4_after_per_target[(name, at)] = d[:, 2].copy()
             if ai == 0:
                 head = (f"\\multirow{{3}}{{*}}{{{DISPLAY[name]}}}"
                         f" & {ATTACK_TEX[at]}"
@@ -167,6 +184,20 @@ def main():
     print("\n% ---- TPR@1e-5 (before -> after), for the running text ----")
     for name, at, b5, a5 in prose:
         print(f"% {name} {at}: {b5:.4f} -> {a5:.4f}")
+
+    print("\n% ---- post-blend TPR@1e-4, FULL PRECISION (does anything survive?) ----")
+    for at in ATTACK_TEX:
+        print(f"% {at}")
+        for name in de.BENCHMARKS:
+            v = tpr4_after_per_target[(name, at)]
+            nm = np.asarray(n_members[name], dtype=float)
+            tp = v * nm                      # implied true positives per target
+            nz = int((v > 0).sum())
+            print(f"%   {name:<9} mean={v.mean():.10g}  max={v.max():.10g}  "
+                  f"targets with TPR>0: {nz}/{len(v)}  implied TP total={tp.sum():.4g}")
+            if nz:
+                print(f"%     per-target TPR: "
+                      + ", ".join(f"{x:.6g}" for x in v))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 """
-Shared utilities for the vulnerability-analysis pipeline.
+Shared scoring and metric utilities for the RARE pipeline.
 
 Contains:
-  - Timing/progress-bar helpers
-  - Per-method evaluation (Spearman / AUROC / KS / precision-recall@k)
-  - Distribution-overlap plotting
-  - LT-IQR scoring
-  - Predicted-class computation on TRAIN under a target shadow model
-  - Config override / validation helpers
+  - Progress-bar helper
+  - Precision / Recall @ top-k% against a gold vulnerable set
+    (`tail_metrics_at_k`, the single definition used by every table and
+    figure generator)
+  - LT-IQR, LT-BTM-R and LT-TOP-R trajectory statistics, and the locked
+    RARE score
+  - Config-override helpers
 """
 
 import sys
@@ -21,8 +22,7 @@ import pandas as pd
 import torch
 import yaml
 from scipy import stats
-from torch.utils.data import DataLoader, Dataset
-import matplotlib.pyplot as plt
+from torch.utils.data import Dataset
 
 
 # =============================================================================
@@ -39,36 +39,6 @@ def _fmt_time(sec: float) -> str:
     h = int(m // 60)
     m2 = m - 60 * h
     return f"{h:d}h{m2:02d}m{s:04.1f}s"
-
-
-class TimerRegistry:
-    def __init__(self):
-        self.rows: List[Dict[str, object]] = []
-
-    def record(self, key: str, wall_sec: float):
-        self.rows.append({"component": str(key), "wall_sec": float(wall_sec)})
-
-    def dataframe(self) -> pd.DataFrame:
-        return pd.DataFrame(self.rows)
-
-    def summary_table(self, prefix: str = "") -> str:
-        df = self.dataframe()
-        if df.empty:
-            return ""
-        df2 = df.copy()
-        df2["wall_hms"] = df2["wall_sec"].map(_fmt_time)
-        lines = [f"\n{'=' * 60}\nRuntime summary {prefix}\n{'=' * 60}"]
-        mlen = max(12, int(df2["component"].astype(str).map(len).max()))
-        lines.append(f"{'component'.ljust(mlen)}  {'wall'}")
-        lines.append(f"{'-' * mlen}  {'-' * 12}")
-        for _, r in df2.iterrows():
-            lines.append(
-                f"{str(r['component']).ljust(mlen)}  {str(r['wall_hms']).rjust(12)}"
-            )
-        total = float(df2["wall_sec"].sum())
-        lines.append(f"{'-' * mlen}  {'-' * 12}")
-        lines.append(f"{'TOTAL'.ljust(mlen)}  {_fmt_time(total).rjust(12)}")
-        return "\n".join(lines)
 
 
 class ProgressBar:
@@ -138,70 +108,19 @@ class IndexedDataset(Dataset):
 # =============================================================================
 # Score-evaluation primitives
 # =============================================================================
-def spearman_corr(scores: np.ndarray, vulnerable: np.ndarray, keep_mask: np.ndarray) -> float:
-    s, v = scores[keep_mask], vulnerable[keep_mask].astype(float)
-    ok = np.isfinite(s)
-    if not np.any(ok):
-        return float("nan")
-    return float(stats.spearmanr(s[ok], v[ok])[0])
+def _budget_at_frac(k_frac: float, n: int, k_rounding: str) -> int:
+    """Retrieval budget k at depth `k_frac` over `n` valid members.
 
-
-def auroc_members_only(scores: np.ndarray, vulnerable: np.ndarray, keep_mask: np.ndarray) -> float:
-    s, y = scores[keep_mask], vulnerable[keep_mask].astype(np.int32)
-    ok = np.isfinite(s)
-    s, y = s[ok], y[ok]
-    n_pos, n_neg = int(y.sum()), int((1 - y).sum())
-    if n_pos == 0 or n_neg == 0:
-        return float("nan")
-    ranks = stats.rankdata(s, method="average")
-    sum_ranks_pos = float(ranks[y == 1].sum())
-    return float((sum_ranks_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
-
-
-def ks_stat_members_only(scores: np.ndarray, vulnerable: np.ndarray, keep_mask: np.ndarray) -> float:
-    s, y = scores[keep_mask], vulnerable[keep_mask].astype(bool)
-    ok = np.isfinite(s)
-    s, y = s[ok], y[ok]
-    a, b = s[y], s[~y]
-    if a.size == 0 or b.size == 0:
-        return float("nan")
-    return float(stats.ks_2samp(a, b, alternative="two-sided", mode="auto").statistic)
-
-
-def precision_recall_at_k(
-    scores: np.ndarray,
-    vulnerable: np.ndarray,
-    keep_mask: np.ndarray,
-    k_fracs: List[float],
-) -> pd.DataFrame:
-    """Precision / Coverage (= Recall) at top-k% over members vs binary
-    vulnerable label. Kept for legacy callers; new code should use
-    `tail_metrics_at_k` which also computes Tail ρ and Jaccard vs LiRA."""
-    s, v = scores[keep_mask], vulnerable[keep_mask]
-    ok = np.isfinite(s)
-    s, v = s[ok], v[ok]
-    n, n_v = s.size, int(v.sum())
-    order = np.argsort(s)[::-1]
-    rows = []
-    for kf in k_fracs:
-        k = int(round(kf * n))
-        k = max(0, min(k, n))
-        if k <= 0:
-            precision = recall = 0.0
-        else:
-            top = order[:k]
-            tp = int(v[top].sum())
-            precision = float(tp / k)
-            recall = float(tp / n_v) if n_v > 0 else 0.0
-        rows.append(
-            {
-                "k": f"{kf * 100:.1f}%",
-                "k_samples": k,
-                "precision": precision,
-                "recall": recall,
-            }
-        )
-    return pd.DataFrame(rows)
+    k_rounding="round" is the legacy rule; "ceil" matches the Precision@k
+    definition of Pollock et al. (k = ceil(k% * n_members)).
+    """
+    if k_rounding == "ceil":
+        k = int(np.ceil(float(k_frac) * n))
+    elif k_rounding == "round":
+        k = int(round(float(k_frac) * n))
+    else:
+        raise ValueError(f"k_rounding must be 'round'|'ceil', got {k_rounding!r}")
+    return max(0, min(k, n))
 
 
 def tail_metrics_at_k(
@@ -213,8 +132,22 @@ def tail_metrics_at_k(
     gold_scores: Optional[np.ndarray] = None,
     pool_member_scores: Optional[List[np.ndarray]] = None,
     gold_topk: bool = False,
+    cap_k_at_gold: bool = True,
+    k_rounding: str = "round",
 ) -> pd.DataFrame:
     """Top-k tail metrics for ranking-quality evaluation.
+
+    Budget parameters (apply to every mode unless noted):
+
+      k_rounding    "round" (legacy) or "ceil". The retrieval budget at depth
+                    k% is round(k% * n_members) or ceil(k% * n_members).
+      cap_k_at_gold lira mode only. True (legacy) truncates the budget to |V|,
+                    giving the capped Precision |M_k n V| / min(k, |V|).
+                    False leaves the budget untruncated, giving the standard
+                    uncapped Precision@k = |M_k n V| / k of Pollock et al.
+                    Under the uncapped rule Precision is mechanically bounded
+                    by |V|/k whenever |V| < k, so read it alongside the
+                    achievable ceiling min(k, |V|) / |V| for recall.
 
     Three modes selected by the supplied gold reference:
 
@@ -242,7 +175,7 @@ def tail_metrics_at_k(
     lira mode  (gold_scores and vulnerable are not None):
       vulnerable: fixed binary label (LiRA-thr-defined, over all N samples).
       gold_scores: continuous LiRA scores (over all N samples).
-        precision  = |M_k ∩ V| / min(k, |V|)    [k capped at |V|]
+        precision  = |M_k ∩ V| / k       [k capped at |V| if cap_k_at_gold]
         recall     = |M_k ∩ V| / |V|
         jaccard    = NaN  (|V|!=k, size-asymmetric — see lira_topk mode)
         tail_rho   = Spearman(method, gold) on M_k ∩ V (the LiRA-thr
@@ -250,13 +183,17 @@ def tail_metrics_at_k(
                      agreement on the gold members M_k recovers
         gold_n     = |V|
 
-      Note: in lira mode the top-k size is capped at |V|, so the
+      Note: with cap_k_at_gold=True the top-k size is capped at |V|, so the
       `k_samples` column reports min(round(k% · n_members), |V|). This
       prevents Precision from being mechanically ceiling-limited to
       |V|/k_samples when the requested k% exceeds |V|/n_members (e.g.,
       k=10% under FPR=1e-4 where |V| ≈ |members|/20). Compare
       k_samples vs gold_n to see whether the cap fired for a given row.
+      With cap_k_at_gold=False no truncation is applied and `k_samples` is
+      the raw budget.
     """
+    if k_rounding not in ("round", "ceil"):
+        raise ValueError(f"k_rounding must be 'round'|'ceil', got {k_rounding!r}")
     s_m = np.asarray(method_scores, dtype=np.float32)[keep_mask]
     ok = np.isfinite(s_m)
 
@@ -267,7 +204,7 @@ def tail_metrics_at_k(
         n = s_valid.size
         rows: List[Dict[str, Any]] = []
         for kf in k_fracs:
-            k = max(0, min(int(round(kf * n)), n))
+            k = _budget_at_frac(kf, n, k_rounding)
             row: Dict[str, Any] = {"k": f"{kf * 100:.1f}%", "k_samples": k}
             if k == 0:
                 row.update(precision=0.0, recall=0.0, jaccard=float("nan"),
@@ -308,7 +245,7 @@ def tail_metrics_at_k(
         n = s_valid.size
         rows = []
         for kf in k_fracs:
-            k = max(0, min(int(round(kf * n)), n))
+            k = _budget_at_frac(kf, n, k_rounding)
             row = {"k": f"{kf * 100:.1f}%", "k_samples": k}
             if k == 0:
                 row.update(precision=0.0, recall=0.0, jaccard=float("nan"),
@@ -345,11 +282,12 @@ def tail_metrics_at_k(
 
     rows = []
     for kf in k_fracs:
-        k = max(0, min(int(round(kf * n)), n))
-        # Cap top-k size at |V| so Precision isn't mechanically limited to
-        # |V|/k when the requested k% exceeds the vulnerable-set fraction
-        # (the FPR=1e-4, k=10% ceiling case).
-        if v_valid is not None and n_v > 0:
+        k = _budget_at_frac(kf, n, k_rounding)
+        # Legacy capped rule: cap top-k size at |V| so Precision isn't
+        # mechanically limited to |V|/k when the requested k% exceeds the
+        # vulnerable-set fraction (the FPR=1e-4, k=10% ceiling case).
+        # cap_k_at_gold=False gives the standard uncapped Precision@k.
+        if cap_k_at_gold and v_valid is not None and n_v > 0:
             k = min(k, n_v)
         row = {"k": f"{kf * 100:.1f}%", "k_samples": k}
         if k == 0:
@@ -386,231 +324,6 @@ def tail_metrics_at_k(
     return pd.DataFrame(rows)
 
 
-def corr_vs_lira(method_scores: np.ndarray, lira_scores: np.ndarray, mask: np.ndarray) -> Dict[str, float]:
-    aa = method_scores[mask]
-    bb = lira_scores[mask]
-    v = np.isfinite(aa) & np.isfinite(bb)
-    aa, bb = aa[v], bb[v]
-    if aa.size == 0:
-        return {"spearman": float("nan"), "pearson": float("nan"), "kendall": float("nan")}
-    spear = float(stats.spearmanr(aa, bb)[0])
-    pear = float(np.corrcoef(aa.astype(np.float64), bb.astype(np.float64))[0, 1]) if aa.size >= 2 else float("nan")
-    tau = float(stats.kendalltau(aa, bb, nan_policy="omit")[0])
-    return {"spearman": spear, "pearson": pear, "kendall": tau}
-
-
-def evaluate_method(
-    name: str,
-    scores: np.ndarray,
-    keep_mask: np.ndarray,
-    k_fracs: List[float],
-    *,
-    vulnerable: Optional[np.ndarray] = None,
-    gold_scores: Optional[np.ndarray] = None,
-    pool_member_scores: Optional[List[np.ndarray]] = None,
-    gold_topk: bool = False,
-    print_report: bool = True,
-) -> Dict[str, object]:
-    """Compute tail-focused ranking-quality metrics per top-k.
-
-    Returns dict with keys: name, scores, pr (DataFrame with columns
-    k, k_samples, precision, recall, jaccard, tail_rho, gold_n).
-
-    Pass pool_member_scores for union mode, gold_scores + gold_topk=True
-    for lira_topk mode, or gold_scores + vulnerable for lira mode. See
-    tail_metrics_at_k for full semantics.
-    """
-    s = scores[keep_mask]
-    ok = np.isfinite(s)
-    if print_report:
-        print(f"\nEvaluating {name} | valid={int(ok.sum())}/{int(keep_mask.sum())}")
-        if np.any(ok):
-            ss = s[ok]
-            print(f"  range=[{ss.min():.6f},{ss.max():.6f}] mean={ss.mean():.6f}±{ss.std():.6f}")
-    pr = tail_metrics_at_k(
-        scores, keep_mask, k_fracs,
-        vulnerable=vulnerable,
-        gold_scores=gold_scores,
-        pool_member_scores=pool_member_scores,
-        gold_topk=gold_topk,
-    )
-    if print_report:
-        print(pr.to_string(index=False))
-    return {"name": name, "scores": scores, "pr": pr}
-
-
-def side_by_side_report(results: List[Dict[str, object]]) -> pd.DataFrame:
-    """Per-target side-by-side per-k table for all methods.
-
-    Columns per method `n`:
-      n_precision, n_recall, n_tail_rho, n_jaccard
-    """
-    if not results:
-        return pd.DataFrame()
-    base = results[0]["pr"][["k", "k_samples"]].copy()
-    out = base.copy()
-    metric_cols = ["precision", "recall", "jaccard", "tail_rho", "gold_n"]
-    for r in results:
-        n = r["name"]
-        keep = [c for c in metric_cols if c in r["pr"].columns]
-        pr = r["pr"][["k"] + keep].rename(
-            columns={c: f"{n}_{c}" for c in keep}
-        )
-        out = out.merge(pr, on="k", how="left")
-    return out
-
-
-def plot_overlapping_distributions(
-    results: List[Dict[str, object]],
-    vulnerable: np.ndarray,
-    membership_mask: np.ndarray,
-    output_path: Path,
-    figsize: Tuple[int, int] = (12, 8),
-    bins: int = 60,
-):
-    n_methods = len(results)
-    if n_methods == 0:
-        return
-    ncols = 2
-    nrows = (n_methods + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-    axes = axes.flatten() if n_methods > 1 else [axes]
-
-    mem = membership_mask.astype(bool)
-    vuln = vulnerable.astype(bool)
-
-    for i, result in enumerate(results):
-        name = result["name"]
-        scores = result["scores"]
-        ax = axes[i]
-
-        scores_mem = scores[mem]
-        vuln_mem = vuln[mem]
-        valid = np.isfinite(scores_mem)
-        scores_mem = scores_mem[valid]
-        vuln_mem = vuln_mem[valid]
-
-        if scores_mem.size == 0:
-            ax.text(0.5, 0.5, "No valid scores", ha="center", va="center")
-            continue
-
-        scores_vuln = scores_mem[vuln_mem]
-        scores_non_vuln = scores_mem[~vuln_mem]
-        vmin, vmax = np.min(scores_mem), np.max(scores_mem)
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            ax.text(0.5, 0.5, "Degenerate scores", ha="center", va="center")
-            continue
-
-        bin_edges = np.linspace(vmin, vmax, bins + 1)
-        ax.hist(
-            scores_non_vuln,
-            bins=bin_edges,
-            alpha=0.55,
-            color="blue",
-            label=f"Non-Vuln (n={len(scores_non_vuln)})",
-            edgecolor="black",
-            linewidth=0.25,
-            density=True,
-        )
-        ax.hist(
-            scores_vuln,
-            bins=bin_edges,
-            alpha=0.55,
-            color="red",
-            label=f"Vuln (n={len(scores_vuln)})",
-            edgecolor="black",
-            linewidth=0.25,
-            density=True,
-        )
-        ax.set_title(name, fontsize=11, fontweight="bold")
-        ax.set_xlabel("Score", fontsize=9)
-        ax.set_ylabel("Density", fontsize=9)
-        ax.legend(fontsize=8, loc="best")
-        ax.grid(True, alpha=0.25)
-
-        if len(scores_vuln) > 0 and len(scores_non_vuln) > 0:
-            ks_stat = stats.ks_2samp(scores_vuln, scores_non_vuln, alternative="two-sided").statistic
-            ax.text(
-                0.02,
-                0.98,
-                f"KS={ks_stat:.3f}",
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="top",
-                bbox=dict(boxstyle="round", facecolor="yellow", alpha=0.6),
-            )
-
-    for j in range(i + 1, len(axes)):
-        axes[j].axis("off")
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot: {output_path}")
-
-
-# =============================================================================
-# Predicted classes on TRAIN under the original target model
-# =============================================================================
-@torch.no_grad()
-def compute_predicted_classes_on_train(
-    experiment_dir: str,
-    target_model: int,
-    config: dict,
-    train_dataset_raw,
-    num_classes: int,
-    device: str,
-    batch_size: int = 256,
-    num_workers: int = 4,
-    show_progress: bool = True,
-) -> np.ndarray:
-    from rare.utils.data import TransformSubset, build_transforms
-    from rare.utils.model import get_model
-
-    exp = Path(experiment_dir)
-    model_dir = exp / f"model_{target_model}"
-    model_path = model_dir / "best_model.pth"
-    if not model_path.exists():
-        raise FileNotFoundError(f"Missing model checkpoint: {model_path}")
-
-    dev = torch.device(device)
-    model = get_model(int(num_classes), **config.get("model", {}))
-    ckpt = torch.load(model_path, map_location="cpu")
-    model.load_state_dict(ckpt["state_dict"])
-    model = model.to(dev).eval()
-
-    eval_tf = build_transforms(config, train=False)
-    N = len(train_dataset_raw)
-    all_idx = np.arange(N, dtype=np.int64)
-    subset = TransformSubset(train_dataset_raw, all_idx, transform=eval_tf)
-    indexed = IndexedDataset(subset)
-    loader = DataLoader(
-        indexed,
-        batch_size=int(batch_size),
-        shuffle=False,
-        num_workers=int(num_workers),
-        pin_memory=(device == "cuda"),
-        persistent_workers=False,
-    )
-
-    pred = np.full((N,), -1, dtype=np.int64)
-    pb = ProgressBar("pred_class_train", total=len(loader), enabled=show_progress)
-    for bi, (x, _, idx) in enumerate(loader, 1):
-        x = x.to(dev, non_blocking=True)
-        yhat = model(x).argmax(dim=1).detach().cpu().numpy().astype(np.int64)
-        pred[idx.numpy()] = yhat
-        pb.update(bi)
-    pb.close()
-
-    if np.any(pred < 0):
-        bad = int(np.sum(pred < 0))
-        raise RuntimeError(f"Failed to compute predicted classes for {bad} train samples.")
-    return pred
-
-
-# =============================================================================
-# LT-IQR
-# =============================================================================
 def compute_lt_iqr_scores(
     losses_NE: np.ndarray,
     keep_mask: np.ndarray,
@@ -707,6 +420,32 @@ def score_avg_min_q_reference_losses(
     return per_ref.mean(axis=0).astype(np.float32)
 
 
+def score_avg_max_q_reference_losses(
+    reference_losses: List[np.ndarray],
+    q: float = 0.50,
+) -> np.ndarray:
+    """LT-TOP-R: mirror of LT-BTM-R on the top q-fraction of the trajectory.
+
+    For each reference model, average the top-q fraction of each sample's
+    per-epoch loss trajectory, then average those scores across references.
+    Mirrors `score_avg_min_q_reference_losses` line for line; only the
+    partition side differs (`[-k:]` on the upper partition vs `[:k]` on the
+    lower), so the q -> k rounding and the cross-reference averaging match.
+    """
+    if not reference_losses:
+        raise ValueError("No reference losses provided for LT-TOP-R scoring.")
+    E = int(reference_losses[0].shape[1])
+    k = max(1, int(round(float(q) * E)))
+    per_ref = np.stack(
+        [
+            np.partition(ref_loss, -k, axis=1)[:, -k:].mean(axis=1)
+            for ref_loss in reference_losses
+        ],
+        axis=0,
+    )
+    return per_ref.mean(axis=0).astype(np.float32)
+
+
 def _find_rare_reference_loss(target_dir: Path, ref_idx: int) -> Tuple[int, str]:
     for p in sorted(target_dir.glob(f"ref_losses_E*_*_ref{int(ref_idx)}.npy")):
         m = _REF_LOSS_RE.match(p.name)
@@ -766,80 +505,6 @@ def load_rare_locked_scores(
 # So HIGH score = member. Useful as a no-training baseline; flipped non-members
 # will inflate AUC noise but member-rank metrics ignore them.
 # =============================================================================
-def per_sample_target_ref_distance(
-    target_NEF: np.ndarray,
-    ref_list_NEF: List[np.ndarray],
-    metric: str = "euclidean",
-    z_norm_channels: bool = True,
-) -> np.ndarray:
-    """Mean over R references of dist(target_traj_flat, ref_r_traj_flat).
-
-    Parameters
-    ----------
-    target_NEF : (N, E, F_slot) target trajectory.
-    ref_list_NEF : list of R arrays each (N, E, F_slot).
-    metric : "euclidean" or "cosine".
-    z_norm_channels : if True, robust-z each channel across (N×E) before
-        flattening, so loss and margin contribute on comparable scales.
-
-    Returns
-    -------
-    scores : (N,) fp32. High = target member.
-    """
-    R = len(ref_list_NEF)
-    if R == 0:
-        return np.full(target_NEF.shape[0], np.nan, dtype=np.float32)
-
-    for r, ref in enumerate(ref_list_NEF):
-        if ref.shape != target_NEF.shape:
-            raise ValueError(
-                f"ref_list_NEF[{r}].shape={ref.shape} != target {target_NEF.shape}"
-            )
-
-    N, E, F = target_NEF.shape
-    t = target_NEF.astype(np.float32, copy=False)
-    cs = [ref.astype(np.float32, copy=False) for ref in ref_list_NEF]
-
-    if z_norm_channels:
-        union = np.concatenate(
-            [t.reshape(-1, F)] + [c.reshape(-1, F) for c in cs], axis=0
-        ).astype(np.float32)
-        med = np.median(union, axis=0, keepdims=True).astype(np.float32)
-        mad = np.median(np.abs(union - med), axis=0, keepdims=True).astype(np.float32)
-        scale = np.maximum(1.4826 * mad, np.float32(1e-8))
-
-        def _apply(arr: np.ndarray) -> np.ndarray:
-            out = (arr - med.reshape(1, 1, F)) / scale.reshape(1, 1, F)
-            return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
-
-        t = _apply(t)
-        cs = [_apply(c) for c in cs]
-
-    t_flat = t.reshape(N, -1)                                      # (N, E*F)
-    scores = np.zeros(N, dtype=np.float32)
-    metric_l = str(metric).lower()
-    for ref in cs:
-        ref_flat = ref.reshape(N, -1)
-        if metric_l == "euclidean":
-            diff = t_flat - ref_flat
-            d = np.sqrt(np.sum(diff * diff, axis=1))
-        elif metric_l == "cosine":
-            num = np.sum(t_flat * ref_flat, axis=1)
-            den = (
-                np.linalg.norm(t_flat, axis=1)
-                * np.linalg.norm(ref_flat, axis=1)
-                + 1e-12
-            )
-            d = 1.0 - num / den
-        else:
-            raise ValueError(f"metric must be euclidean|cosine, got {metric!r}")
-        scores += d.astype(np.float32, copy=False)
-    return (scores / float(R)).astype(np.float32, copy=False)
-
-
-# =============================================================================
-# Config-override helpers (YAML-aware; supports lists/bools/numbers/null)
-# =============================================================================
 def parse_overrides(overrides: List[str]) -> Dict[str, Any]:
     """
     Parse CLI overrides like:
@@ -879,15 +544,3 @@ def recursive_update(base: Dict[str, Any], upd: Dict[str, Any]) -> Dict[str, Any
     return base
 
 
-def validate_required(config: Dict[str, Any], keys: List[str]) -> None:
-    def has_keypath(d: Dict[str, Any], path: str) -> bool:
-        cur = d
-        for p in path.split("."):
-            if not isinstance(cur, dict) or p not in cur:
-                return False
-            cur = cur[p]
-        return True
-
-    missing = [k for k in keys if not has_keypath(config, k)]
-    if missing:
-        raise ValueError(f"Missing required config keys: {missing}")

@@ -75,21 +75,24 @@ from the trajectories and attack artifacts by the table/figure scripts below.
 ## 3. Regenerating tables and figures
 
 Each script reads the on-disk artifacts and writes to
-`paper_tabs_figs/figures/` (LaTeX + CSV) or `results/`.
+`paper_tabs_figs/tables/` (table LaTeX + CSV) or `paper_tabs_figs/figures/`
+(figure PDF + CSV). The manuscript includes figures as `figures/fig_*.pdf`.
 
 | Paper element | Script |
 |---|---|
 | Table 1 — Main results | `paper_tabs_figs/tab_main.py` |
 | Table 2 — Union budget sweep | `paper_tabs_figs/tab_union.py` |
 | Table 3 — Cross-architecture | `paper_tabs_figs/tab_cross_arch.py` |
-| Table 4 — Reference-statistic & component ablation | `paper_tabs_figs/tab_abl_final_vs_traj.py`, `abl_ref_last.py`, `abl_ref_minmax.py`, `tab_abl_components.py` |
-| Table 5 — Budget equivalence | `scripts/budget_match_sweep.py` |
+| Table 4 — Reference-statistic & component ablation | `paper_tabs_figs/tab_abl_final_vs_traj.py` |
+| Table 5 — Budget equivalence | `scripts/budget_match_sweep.py`, then `scripts/main_table.py` |
 | Table 6 — Bottom-q window | `paper_tabs_figs/tab_abl_quantile.py` |
 | Table 7 — Reference budget M | `paper_tabs_figs/tab_abl_refM.py` |
 | Table 8 — Agreement-based gold | `analysis/agreement_gold.py` |
-| Table 9 — Unsupervised selection | `paper_tabs_figs/tab_actionable_selection.py` |
+| §Unsupervised selection (prose numbers) | `paper_tabs_figs/tab_actionable_selection.py` (KMeans selection; also the shared base module for the `analysis/` selection studies), `analysis/selection_three_fpr.py`, `analysis/recall_three_fpr.py`, `analysis/matched_selection.py` |
 | Table 10 — RARE-guided mitigation | `paper_tabs_figs/tab_defense.py` |
 | Table 11 — Pipeline runtime | `paper_tabs_figs/tab_pipeline_cost.py` |
+| Appendix — Budget equivalence (crossover) | `paper_tabs_figs/tab_crossover.py` |
+| Appendix — Precision/Recall@k | `paper_tabs_figs/tab_precision_recall.py` |
 | Appendix — Target-model quality | `paper_tabs_figs/tab_model_quality.py` |
 | Figure 1 — Top-3% overlap | `paper_tabs_figs/fig_teaser_overlap_top3.py` |
 | Figure 2 — Qualitative examples | `paper_tabs_figs/fig_qualitative_examples.py` |
@@ -99,7 +102,7 @@ Each script reads the on-disk artifacts and writes to
 | Figure 6 — Ranking RBO | `paper_tabs_figs/fig_ranking_rbo.py` |
 
 ```bash
-python paper_tabs_figs/tab_main.py     # -> paper_tabs_figs/figures/tab_main.tex
+python paper_tabs_figs/tab_main.py     # -> paper_tabs_figs/tables/tab_main.tex
 python paper_tabs_figs/fig_p_vs_k.py   # -> paper_tabs_figs/figures/fig_p_vs_k.pdf
 ```
 

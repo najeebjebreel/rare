@@ -8,8 +8,14 @@ masks are independent of the fixed split). Agreement gold sets are
     V^(p) = { member x : #{ i : x in V^(i) } >= ceil(p * N) },
 
 for p in {0.5, 0.8, 1.0}, where V^(i) is target i's LiRA-256 vulnerable set
-at FPR <= 1e-4. Methods (RARE, LT-IQR, LiRA-8) are then evaluated per target
-against each V^(p) with the repo's capped P@k convention.
+at FPR <= 1e-4. Methods (RARE, LT-BTM-R, LT-IQR, LiRA-8) are evaluated per
+target against each V^(p) with Precision@k over a retrieval budget of
+ceil(k% * n_members), untruncated.
+
+Precision only; recall is reported separately. Because the budget is not
+truncated at |V|, a cell is bounded above by min(1, |V|/budget) whenever the
+gold set is smaller than the budget -- the analyze stage prints that ceiling
+per gold level and depth.
 
 Stages (run in order; each is idempotent):
   --stage score    : LiRA-256 + LiRA-8 scores/thresholds for the new targets,
@@ -57,7 +63,7 @@ FPR = 1e-4
 LIRA_REF_SEED = 42          # attacks.py: lira_ref_seed defaults to config seed
 K_FRACS = [0.01, 0.03, 0.05]
 AGREEMENT_PS = [0.5, 0.8, 1.0]
-DEFAULT_CSV = ROOT / "results/agreement_gold_cifar10.csv"
+DEFAULT_CSV = ROOT / "paper_tabs_figs/tables/agreement_gold_cifar10.csv"
 PAPER_RARE_P = {0.01: 0.95, 0.03: 0.83, 0.05: 0.72}  # CIFAR-10 headline row
 
 
@@ -168,7 +174,8 @@ def _load_new_gold(new_exp: Path, j: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _precisions(scores: np.ndarray, members: np.ndarray, vulnerable: np.ndarray) -> Dict[float, float]:
-    pr = tail_metrics_at_k(scores, members, K_FRACS, vulnerable=vulnerable)
+    pr = tail_metrics_at_k(scores, members, K_FRACS, vulnerable=vulnerable,
+                           cap_k_at_gold=False, k_rounding="ceil")
     return {kf: float(p) for kf, p in zip(K_FRACS, pr["precision"].to_numpy())}
 
 
@@ -193,6 +200,26 @@ def stage_analyze(pool_exp: Path, new_exp: Path, out_csv: Path) -> None:
     for p, v in agreement.items():
         print(f"  |V^({p})| (n >= {math.ceil(p*N_NEW)}): {int(v.sum())}")
     assert inter.sum() <= agreement[0.5].sum() <= union.sum()
+
+    # ---- attainable-precision ceiling per gold level and depth ----
+    # Precision = |top-k n V| / k is bounded by min(1, |V| / k): once the gold
+    # set is smaller than the retrieval budget, no ranker can reach 1.
+    n_mem = int(members.sum())
+    print(f"\n=== Attainable precision ceiling (n_mem = {n_mem:,}) ===")
+    print(f"  {'gold':>12}{'|V|':>8}" +
+          "".join(f"{'k=' + str(int(k*100)) + '%':>22}" for k in K_FRACS))
+    print(f"  {'':>12}{'':>8}" +
+          "".join(f"{'budget  max P':>22}" for _ in K_FRACS))
+    gold_levels = [("single (mean)", float(np.mean([v.sum() for v in vuln_sets])))]
+    gold_levels += [(f"V^({p:g})", float(v.sum())) for p, v in agreement.items()]
+    for name, nv in gold_levels:
+        cells = ""
+        for k in K_FRACS:
+            budget = math.ceil(k * n_mem)
+            ceil_p = min(1.0, nv / budget)
+            mark = "  <bounded" if ceil_p < 1.0 else ""
+            cells += f"{budget:>10,}{ceil_p:>8.3f}{mark:>4}"
+        print(f"  {name:>12}{nv:>8,.0f}{cells}")
 
     # ---- per-target method scores ----
     method_scores: Dict[str, List[np.ndarray]] = {
@@ -269,8 +296,13 @@ def stage_analyze(pool_exp: Path, new_exp: Path, out_csv: Path) -> None:
         r"\begin{table}[t]",
         r"\centering",
         r"\caption{Agreement-based gold-set robustness on CIFAR-10 / WRN-28-2:"
-        r" capped P@$k$\% (mean$\pm$std over 10 fixed-split targets) against"
-        r" agreement gold sets $V^{(p)}$ from 10 LiRA-256 audits at FPR$\leq 10^{-4}$.}",
+        r" P@$k$\% (mean$\pm$std over 10 fixed-split targets) against"
+        r" agreement gold sets $V^{(p)}$ from 10 LiRA-256 audits at"
+        r" FPR$\leq 10^{-4}$. Precision@$k$ retrieves"
+        r" $\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ members and is not"
+        r" truncated at $|V^{(p)}|$, so cells with"
+        r" $|V^{(p)}|<\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ are bounded"
+        r" above by $|V^{(p)}|/\lceil k\cdot n_{\mathrm{mem}}/100\rceil$.}",
         r"\label{tab:agreement-gold}",
         r"\setlength{\tabcolsep}{4pt}",
         r"\begin{tabular}{l l r ccc}",

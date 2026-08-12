@@ -1,11 +1,16 @@
 """Generate the LT-BTM-R bottom-q window ablation LaTeX table (tab:abl-quantile).
 
 For each q, the score is the locked sum z_M(LT-BTM-R(q)) + z_M(LT-IQR)
-with M=1. Cells are capped Precision @ k in {1, 3, 5, 10}% under
-LiRA-256 gold at the FPR threshold, averaged across the three WRN-28-2
-benchmarks: each dataset is first averaged over its 10 targets, then the
-cell reports mean +/- std over the three dataset means. Best per column
-bold, second best underlined.
+with M=1. Cells are Precision @ k in {1, 3, 5}% under LiRA-256 gold at
+the FPR threshold, over a retrieval budget of ceil(k% * n_members),
+averaged across the three WRN-28-2 benchmarks: each dataset is first
+averaged over its 10 targets, then the cell reports mean +/- std over the
+three dataset means. Best per column bold, second best underlined.
+
+The endpoints of the q grid coincide with rows of tab:abl-final-vs-traj:
+q=1% selects a single epoch (bottom-1 = REF-MIN) and q=100% averages all
+epochs (REF-MEAN), so those rows must reproduce that table's
+"LT-IQR + REF-MIN" and "LT-IQR + REF-MEAN" Avg. cells.
 
 Trajectories are loaded once per target and reused across the q sweep.
 
@@ -45,14 +50,14 @@ BENCHMARKS = {
     "CINIC10": ROOT / "experiments/cinic10/wrn28-2/2026-05-11_0215",
 }
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
-DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/figures/tab_abl_quantile.tex"
-K_FRACS = [0.01, 0.03, 0.05, 0.10]
+DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_abl_quantile.tex"
+K_FRACS = [0.01, 0.03, 0.05]
 Q_LIST = [0.01, 0.02, 0.03, 0.04, 0.05, 0.10, 0.20, 0.30, 0.40,
           0.50, 0.60, 0.70, 0.90, 1.00]
 
 
 def sweep_target(exp: Path, t: int, fpr: float) -> np.ndarray:
-    """(len(Q_LIST), len(K_FRACS)) capped P@k for one target."""
+    """(len(Q_LIST), len(K_FRACS)) P@k for one target."""
     gold_scores, members, vulnerable = _mt._load_lira_gold(exp, t, fpr)
     target_dir = exp / f"model_{int(t)}"
     target_losses = np.load(target_dir / "per_epoch_losses.npy").astype(np.float32).T
@@ -67,6 +72,7 @@ def sweep_target(exp: Path, t: int, fpr: float) -> np.ndarray:
         pr = _mt.tail_metrics_at_k(
             rare, members, K_FRACS,
             vulnerable=vulnerable, gold_scores=gold_scores,
+            cap_k_at_gold=False, k_rounding="ceil",
         )
         out[qi] = [float(pr.iloc[i]["precision"]) for i in range(len(K_FRACS))]
     return out
@@ -108,15 +114,17 @@ def main():
         "\\begin{table}[t]",
         "\\centering",
         "\\caption{Effect of the LT-BTM-R bottom-$q$\\% window, averaged across"
-        " CIFAR-10, CIFAR-100, and CINIC-10 on WRN-28-2.}",
+        " CIFAR-10, CIFAR-100, and CINIC-10 on WRN-28-2. Precision@$k$"
+        " retrieves $\\lceil k\\cdot n_{\\mathrm{mem}}/100\\rceil$ members and is"
+        " not truncated at $|V|$.}",
         "\\label{tab:abl-quantile}",
         "\\setlength{\\tabcolsep}{4pt}",
         "\\renewcommand{\\arraystretch}{1.05}",
         "\\resizebox{\\columnwidth}{!}{%",
-        "\\begin{tabular}{lcccc}",
+        "\\begin{tabular}{lccc}",
         "\\toprule",
-        "\\textbf{$q$} & \\textbf{P@1\\%} & \\textbf{P@3\\%} & \\textbf{P@5\\%}"
-        " & \\textbf{P@10\\%} \\\\",
+        "\\textbf{$q$} & \\textbf{P@1\\%} & \\textbf{P@3\\%}"
+        " & \\textbf{P@5\\%} \\\\",
         "\\midrule",
     ]
     for qi, q in enumerate(Q_LIST):
@@ -133,7 +141,7 @@ def main():
     print(tex)
 
     print("\n% ---- prose numbers ----")
-    for j, k in enumerate(["P@1%", "P@3%", "P@5%", "P@10%"]):
+    for j, k in enumerate(["P@1%", "P@3%", "P@5%"]):
         best = Q_LIST[int(np.argmax(cell_mean[:, j]))]
         q50 = Q_LIST.index(0.50)
         print(f"% {k}: best q = {int(best * 100)}% "

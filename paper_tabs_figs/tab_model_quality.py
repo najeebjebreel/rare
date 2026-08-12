@@ -6,7 +6,7 @@ final-epoch evaluation, and reports mean +/- std over the ten targets per
 benchmark: cross-entropy loss and accuracy on the target's own training
 members (no augmentation) and on the held-out test set.
 
-Outputs paper_tabs_figs/figures/tab_model_quality.{tex,csv}.
+Outputs paper_tabs_figs/tables/tab_model_quality.{tex,csv}.
 
 Usage:
   python paper_tabs_figs/tab_model_quality.py
@@ -35,7 +35,7 @@ FIELDS = [
     ("Train_acc (%)", "train_acc"),
     ("Test_acc (%)", "test_acc"),
 ]
-DEFAULT_OUT = ROOT / "paper_tabs_figs/figures"
+DEFAULT_OUT = ROOT / "paper_tabs_figs/tables"
 
 
 def _read_metrics(exp: Path):

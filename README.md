@@ -31,11 +31,13 @@ PRO 6000 (Blackwell).
 
 ```
 rare/                 importable library
-  analysis/utils.py   RARE / LT-IQR / LT-BTM-R scoring and capped P@k metrics
+  analysis/utils.py   RARE / LT-IQR / LT-BTM-R scoring and P@k metrics
   attacks/            MIA signal helpers
   utils/              training and data plumbing
 scripts/              pipeline entry points (train, references, baselines)
-paper_tabs_figs/      one script per paper table/figure -> figures/*.{tex,pdf}
+paper_tabs_figs/      one script per paper table/figure
+  tables/             generated table LaTeX + CSV
+  figures/            generated figure PDF + CSV
 configs/              YAML configs for each stage
 EXPERIMENTS.md        full run order and code-to-paper map
 ```
@@ -78,7 +80,7 @@ Each paper table and figure is regenerated from the on-disk artifacts by a
 single script, e.g.:
 
 ```bash
-python paper_tabs_figs/tab_main.py           # Table 1  -> figures/tab_main.tex
+python paper_tabs_figs/tab_main.py           # Table 1  -> tables/tab_main.tex
 python paper_tabs_figs/fig_p_vs_k.py         # Figure 5 -> figures/fig_p_vs_k.pdf
 ```
 
@@ -94,9 +96,12 @@ from rare.analysis.utils import load_rare_locked_scores, tail_metrics_at_k
 # Full RARE = z(LT-IQR) + z(LT-BTM-R) for one target in an experiment dir.
 scores = load_rare_locked_scores(EXP, target_model=0, num_refs=1, q=0.5)
 
-# Capped precision of the top-k% against a vulnerable (gold) set:
+# Precision / Recall of the top-k% against a vulnerable (gold) set. The
+# paper's convention retrieves ceil(k% * n_members) and does not truncate
+# the budget at |V|:
 metrics = tail_metrics_at_k(scores, members, [0.01, 0.03, 0.05],
-                            vulnerable=vulnerable, gold_scores=gold)
+                            vulnerable=vulnerable, gold_scores=gold,
+                            cap_k_at_gold=False, k_rounding="ceil")
 ```
 
 The low-level statistics `score_ltiqr_trajectory` and
