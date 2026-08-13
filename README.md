@@ -1,4 +1,4 @@
-# RARE: Reference-Augmented Ranking by Epoch Statistics for Membership-Inference Vulnerability Assessment
+# RARE: Reference-Augmented Ranking by Epoch Statistics to Assess Membership-Inference Vulnerability
 
 Official implementation of *RARE* (under submission). RARE ranks a target
 model's known training members by their vulnerability to membership-inference
@@ -111,8 +111,7 @@ The low-level statistics `score_ltiqr_trajectory` and
 
 ```bibtex
 @inproceedings{rare_anonymous,
-  title  = {RARE: Reference-Augmented Ranking by Epoch Statistics for 
-  Membership-Inference Vulnerability Assessment},
+  title  = {RARE: Reference-Augmented Ranking by Epoch Statistics to Assess Membership-Inference Vulnerability},
   author = {Anonymous},
   note   = {Under submission},
   year   = {2026}
