@@ -111,7 +111,7 @@ The low-level statistics `score_ltiqr_trajectory` and
 ## Citation
 
 ```bibtex
-@misc{khalil2026rare,
+@unpublished{khalil2026rare,
   title  = {{RARE}: Reference-Augmented Ranking by Epoch Statistics to Efficiently Assess Membership-Inference Vulnerability},
   author = {Khalil, Mona and Jebreel, Najeeb and S{\'a}nchez, David and Domingo-Ferrer, Josep},
   note   = {Under submission},
