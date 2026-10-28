@@ -24,7 +24,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 
@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from paper_tabs_figs._tex import figure_env
 from rare.analysis.utils import score_avg_min_q_reference_losses
 
 DEFAULT_EXPERIMENT = ROOT / "experiments/cifar10/wrn28-2/2025-12-07_0140"
@@ -261,41 +262,26 @@ def plot_examples(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, bbox_inches="tight", pad_inches=0.02)
-    fig.savefig(output.with_suffix(".png"), dpi=450, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 
-def _write_tex_snippet(
-    output_pdf: Path, tex_path: Path, top_frac: float, excl_frac: float, btm_q: float
-) -> None:
-    include_path = output_pdf.name if output_pdf.parent == tex_path.parent else output_pdf
-    include_s = str(include_path).replace("\\", "/")
-    top_pct = f"{top_frac * 100:g}"
-    excl_pct = f"{excl_frac * 100:g}"
-    btm_pct = f"{btm_q * 100:g}"
-    label = output_pdf.stem
-    if label.startswith("fig_"):
-        label = label[4:]
-    tex = rf"""\begin{{figure*}}[t]
-\centering
-\includegraphics[width=\textwidth]{{{include_s}}}
-\caption{{
-Four CIFAR-10 members flagged by LiRA-256 at FPR$=10^{{-4}}$, with their
-per-epoch target (blue) and single-reference (orange) loss trajectories.
-LT-IQR reads the spread of the target trajectory; dots mark the
-reference's bottom-{btm_pct}\% epochs, whose mean (dashed) is LT-BTM-R. Percentages give each score's
-rank among members. (a)~Both components rank the sample in their
-top-${top_pct}\%$. (b)~Only the volatile target trajectory flags it;
-the reference fits it well (LT-BTM-R outside the top-{excl_pct}\%).
-(c)~The target trajectory is stable, but the reference's loss stays high
-even in its best epochs (LT-IQR outside the top-{excl_pct}\%).
-(d)~Neither component alone reaches its top-${top_pct}\%$, yet their sum
-places the sample in \rare{{}}'s top-${top_pct}\%$: two moderate signals
-add up to high vulnerability.
-}}
-\label{{fig:{label}}}
-\end{{figure*}}
+CAPTION = r"""
+Four CIFAR10 members flagged as vulnerable by LiRA-256 at
+FPR$=10^{-4}$ (WRN-28-2 target). Per-epoch target (blue) and
+single-reference (orange) losses; dots mark the reference's
+bottom-$50\%$ checkpoints, whose mean defines LT-BTM-R (dashed).
+Lower percentages indicate more vulnerability
+({\em e.g.} 1\% means among the top 1\% of vulnerability ranks). 
+Panels show, in turn, a member recovered by both
+components~(a), by target-side LT-IQR only~(b), by reference-side
+LT-BTM-R only~(c), and by neither component alone but by their standardized
+sum~(d).
 """
+
+
+def _write_tex_snippet(output_pdf: Path, tex_path: Path) -> None:
+    tex = figure_env(output_pdf.name, CAPTION, "fig:qualitative_examples",
+                     width="0.75\\textwidth")
     tex_path.write_text(tex, encoding="utf-8")
 
 
@@ -347,11 +333,7 @@ def main() -> None:
         chosen, images, class_names, tgt, ref, r_iqr, r_btm, r_rare, output,
         btm_q=float(args.btm_q),
     )
-    _write_tex_snippet(
-        output, output.with_suffix(".tex"),
-        top_frac=float(args.top_frac), excl_frac=float(args.excl_frac),
-        btm_q=float(args.btm_q),
-    )
+    _write_tex_snippet(output, output.with_suffix(".tex"))
 
     rows = []
     for (key, title), idx, cname in zip(CASES, indices, class_names):
@@ -371,7 +353,6 @@ def main() -> None:
     df.to_csv(output.with_suffix(".selected.csv"), index=False)
 
     print(f"wrote {output}")
-    print(f"wrote {output.with_suffix('.png')}")
     print(f"wrote {output.with_suffix('.tex')}")
     print(f"wrote {output.with_suffix('.selected.csv')}")
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))

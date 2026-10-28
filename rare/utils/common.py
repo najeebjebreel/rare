@@ -1,7 +1,6 @@
 """Logging, seeding, config, and checkpoint utilities."""
 
 import os
-import json
 import time
 import yaml
 import logging
@@ -123,72 +122,6 @@ def save_config(config, save_path):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, 'w') as f:
         yaml.dump(config, f, default_flow_style=False)
-
-
-def load_config(config_path):
-    """Load configuration dict from a YAML file."""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
-
-
-def save_results(results, save_path):
-    """Save results dict to a JSON file (numpy-aware)."""
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-    def convert_numpy(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, dict):
-            return {k: convert_numpy(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy(item) for item in obj]
-        else:
-            return obj
-
-    results_json = convert_numpy(results)
-
-    with open(save_path, 'w') as f:
-        json.dump(results_json, f, indent=4)
-
-
-def count_parameters(model):
-    """Number of trainable parameters in a model."""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def save_model(model, save_path, optimizer=None, epoch=None, **kwargs):
-    """Save a model checkpoint."""
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-    checkpoint = {
-        'model_state_dict': model.state_dict(),
-    }
-
-    if optimizer is not None:
-        checkpoint['optimizer_state_dict'] = optimizer.state_dict()
-
-    if epoch is not None:
-        checkpoint['epoch'] = epoch
-
-    checkpoint.update(kwargs)
-
-    torch.save(checkpoint, save_path)
-
-
-def load_model(model, load_path, optimizer=None, device=None):
-    """Load a model checkpoint."""
-    checkpoint = torch.load(load_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-
-    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-    return model, optimizer, checkpoint
 
 
 def parse_overrides(override_list):

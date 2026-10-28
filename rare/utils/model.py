@@ -1,44 +1,8 @@
-"""Model architectures and factory function."""
+"""Model architectures used in the paper (WRN-28-2, WRN-40-4, ResNet-20) and their factory."""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import timm
-
-
-class FCN(nn.Module):
-    """
-    A generic fully connected network for tabular datasets (Purchase, Location, Texas).
-
-    Exposes intermediate representations useful for membership inference attacks.
-    """
-
-    def __init__(self, input_dim, num_classes, hidden_dims=[1024, 512, 256, 128],
-                 dropout_rate=0.0, activation='tanh'):
-        super().__init__()
-        self.activations = {
-            'relu': nn.ReLU,
-            'tanh': nn.Tanh,
-            'gelu': nn.GELU
-        }
-        if activation not in self.activations:
-            raise ValueError(f"Unsupported activation: {activation}")
-        act_fn = self.activations[activation]
-        layers, prev_dim = [], input_dim
-        for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(act_fn())
-            if dropout_rate > 0:
-                layers.append(nn.Dropout(dropout_rate))
-            prev_dim = hidden_dim
-        self.feature_extractor = nn.Sequential(*layers)
-        self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
-        self.classifier = nn.Linear(hidden_dims[-1], num_classes)
-
-    def forward(self, x):
-        x = self.feature_extractor(x)
-        x = self.dropout(x)
-        return self.classifier(x)
 
 
 # ----------------- WideResNet -----------------
@@ -132,7 +96,7 @@ class WideResNet(nn.Module):
         return self.fc(out)
 
 
-# ----------------- CIFAR ResNet (ResNet-20/32/44/56/110) -----------------
+# ----------------- CIFAR ResNet (ResNet-20) -----------------
 
 class CifarBasicBlock(nn.Module):
     """Basic block for CIFAR ResNet."""
@@ -215,67 +179,26 @@ class CifarResNet(nn.Module):
 # ----------------- Model factory -----------------
 
 def get_model(num_classes, **kwargs):
-    """
-    Build a model: timm vision models, FCN (tabular), WideResNet (`wrnD-W`),
-    or CIFAR ResNet (`resnet20/32/44/56/110`).
+    """Build a model from the config's `model` section.
 
     kwargs:
-      architecture (str): name in timm registry or one of the custom names above
-      pretrained (bool)
+      architecture (str): `wrnD-W` (WideResNet of depth D, width W, e.g.
+                          wrn28-2, wrn40-4) or `resnet20` (CIFAR ResNet)
       input_channels (int)
-      drop_rate (float)
-      cifar_stem (bool): replace 7x7 stem+pool with 3x3 conv, no pool
-      input_dim, hidden_dims, activation: FCN-only
+      drop_rate (float): WideResNet only
+    Other keys present in the configs (cifar_stem, pretrained) are ignored:
+    both architectures already use a 3x3 CIFAR stem and train from scratch.
     """
-    architecture = kwargs.get('architecture', 'resnet18')
-    pretrained = kwargs.get('pretrained', False)
+    architecture = kwargs.get('architecture', 'wrn28-2')
     drop_rate = kwargs.get('drop_rate', 0.0)
     in_chans = kwargs.get('input_channels', 3)
-    cifar_stem = kwargs.get('cifar_stem', False)
-
-    if architecture == 'fcn':
-        input_dim = kwargs.get('input_dim', 600)
-        hidden_dims = kwargs.get('hidden_dims', [1024, 512, 256, 128])
-        activation = kwargs.get('activation', 'tanh')
-        return FCN(input_dim, num_classes, hidden_dims, dropout_rate=drop_rate, activation=activation)
 
     if architecture.startswith('wrn'):
         # 'wrnD-W' where D=depth, W=width
-        parts = architecture.split('-')
-        if len(parts) == 2:
-            depth = int(parts[0][3:])
-            width = int(parts[1])
-            return WideResNet(depth=depth, num_classes=num_classes, width=width,
-                              drop_rate=drop_rate, in_channels=in_chans)
-
-    cifar_resnets = {'resnet20': 20, 'resnet32': 32, 'resnet44': 44,
-                     'resnet56': 56, 'resnet110': 110}
-    if architecture in cifar_resnets:
-        depth = cifar_resnets[architecture]
-        return CifarResNet(depth=depth, num_classes=num_classes, in_channels=in_chans)
-
-    # timm fallback
-    model = timm.create_model(
-        architecture,
-        pretrained=pretrained,
-        num_classes=num_classes,
-        drop_rate=drop_rate,
-        drop_path_rate=drop_rate
-    )
-
-    # CIFAR stem optimization: replace 7x7 conv + pool with 3x3 conv, no pool.
-    if cifar_stem and hasattr(model, 'conv_stem'):
-        model.conv_stem = nn.Conv2d(
-            in_chans, model.conv_stem.out_channels,
-            kernel_size=3, stride=1, padding=1, bias=False
-        )
-
-    if cifar_stem and hasattr(model, 'conv1'):
-        model.conv1 = nn.Conv2d(
-            in_chans, model.conv1.out_channels,
-            kernel_size=3, stride=1, padding=1, bias=False
-        )
-        if hasattr(model, 'maxpool'):
-            model.maxpool = nn.Identity()
-
-    return model
+        depth, width = architecture[3:].split('-')
+        return WideResNet(depth=int(depth), num_classes=num_classes, width=int(width),
+                          drop_rate=drop_rate, in_channels=in_chans)
+    if architecture == 'resnet20':
+        return CifarResNet(depth=20, num_classes=num_classes, in_channels=in_chans)
+    raise ValueError(f"Unsupported architecture {architecture!r} "
+                     "(expected 'wrnD-W', e.g. 'wrn28-2', or 'resnet20')")

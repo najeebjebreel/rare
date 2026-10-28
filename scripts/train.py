@@ -425,7 +425,7 @@ def main():
         )
     else:
         logger.info("Loading dataset...")
-        train_dataset, _kept_unused, test_dataset, per_epoch_eval_dataset = load_dataset(config)
+        train_dataset, test_dataset, per_epoch_eval_dataset = load_dataset(config)
         n_full = len(train_dataset)
         sub_idx = resolve_subsample(
             n_full, n_data_points, subsample_seed,

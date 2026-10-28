@@ -12,17 +12,14 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
 from typing import List, Optional, Tuple
 
-import matplotlib
 import numpy as np
 import torch
 import yaml
-from scipy.stats import norm, trim_mean
+from scipy.stats import norm
 from sklearn.metrics import auc, roc_curve
 
-from rare.attacks.plotting import plot_combined_roc  # noqa: F401  -- available for ad-hoc ROC plots
 from rare.attacks.signals import convert_signals
 from rare.utils.common import (
     append_runtime,
@@ -35,8 +32,6 @@ from rare.utils.common import (
 )
 from rare.utils.data import load_dataset, resolve_subsample
 
-matplotlib.rcParams["pdf.fonttype"] = 42
-matplotlib.rcParams["ps.fonttype"] = 42
 
 
 # -----------------------------
@@ -78,63 +73,6 @@ def _build_reference_pool(num_models: int, target_models: List[int]) -> np.ndarr
 # -----------------------------
 # LiRA
 # -----------------------------
-def lira_scores_for_model(
-    target_model: int,
-    signals_lira: torch.Tensor,
-    keep_matrix: np.ndarray,
-    fix_variance: bool = False,
-    ref_models: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    LiRA with explicit reference model set (`ref_models`).
-
-    `ref_models` should NOT include any target models (and will also exclude
-    `target_model` itself).
-    """
-    M, N, A = signals_lira.shape
-    sig_mean = signals_lira.mean(dim=-1).detach().cpu().numpy()
-    labels = keep_matrix[target_model].astype(bool)
-
-    if ref_models is None:
-        ref_models = np.arange(M, dtype=np.int64)
-    ref_models = np.asarray(ref_models, dtype=np.int64)
-    ref_models = ref_models[ref_models != int(target_model)]
-
-    dat_in = []
-    dat_out = []
-
-    for i in range(N):
-        ref_keep = keep_matrix[ref_models, i].astype(bool)
-        in_ids = ref_models[ref_keep]
-        out_ids = ref_models[~ref_keep]
-        dat_in.append(sig_mean[in_ids, i] if in_ids.size > 0 else np.array([], dtype=np.float64))
-        dat_out.append(sig_mean[out_ids, i] if out_ids.size > 0 else np.array([], dtype=np.float64))
-
-    mean_in = np.array([np.median(x) if len(x) > 0 else 0.0 for x in dat_in])
-    mean_out = np.array([np.median(x) if len(x) > 0 else 0.0 for x in dat_out])
-
-    if fix_variance:
-        all_in = (
-            np.concatenate([x for x in dat_in if len(x) > 0])
-            if any(len(x) > 0 for x in dat_in)
-            else np.array([0.0])
-        )
-        global_std = float(np.std(all_in)) if all_in.size > 1 else 1e-30
-        std_in = np.full(N, global_std)
-        std_out = np.full(N, global_std)
-    else:
-        std_in = np.array([np.std(x) if len(x) > 1 else 1e-30 for x in dat_in])
-        std_out = np.array([np.std(x) if len(x) > 1 else 1e-30 for x in dat_out])
-
-    sc = sig_mean[target_model, :]
-    pr_in = -norm.logpdf(sc, mean_in, std_in + 1e-30)
-    pr_out = -norm.logpdf(sc, mean_out, std_out + 1e-30)
-
-    scores = pr_in - pr_out
-    # Higher => more member-like.
-    return (-scores.astype(np.float32)), labels
-
-
 def lira_scores_for_model_fast(
     target_model: int,
     signals_lira: torch.Tensor,
@@ -142,7 +80,7 @@ def lira_scores_for_model_fast(
     fix_variance: bool = False,
     ref_models: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Vectorized LiRA. Numerically equivalent to `lira_scores_for_model`.
+    """Vectorized LiRA (per-sample online IN/OUT Gaussians).
 
     The reference implementation has an O(N) Python loop that builds variable-
     length `dat_in[i]` and `dat_out[i]` lists, then computes `np.median` and
@@ -217,68 +155,6 @@ def lira_scores_for_model_fast(
 # -----------------------------
 # Attack-R (PURE CE LOSS from logits)
 # -----------------------------
-def attackr_scores_for_model(
-    target_model: int,
-    ce_losses: torch.Tensor,
-    keep_matrix: np.ndarray,
-    ref_models: Optional[np.ndarray] = None,
-    num_ref_models: int = -1,
-    ref_selection_seed: int = 0,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Attack-R using OUT-only reference models, with PURE CE LOSS as the signal.
-
-    `ce_losses` is `(M, N, A)`; we average over augmentations.
-    For each sample, the score is the empirical CDF of the target's loss
-    in the OUT-reference loss distribution; we return `-pr` so higher => member.
-    """
-    M, N, A = ce_losses.shape
-
-    # Attack-R reference convention (Pollock 2025 + ml_privacy_meter/2024_rmia):
-    # single un-augmented view, no averaging over A. Our pipeline's logits
-    # tensor carries A=2 (original + horizontal flip), but Attack-R consumes
-    # only the un-augmented slot to match the reference baselines.
-    loss_np = ce_losses.detach().cpu().numpy()
-    loss_mean = loss_np[:, :, 0]
-
-    labels = keep_matrix[target_model].astype(bool)
-    prediction = np.zeros(N, dtype=np.float32)
-
-    if ref_models is None:
-        ref_models = np.arange(M, dtype=np.int64)
-    ref_models = np.asarray(ref_models, dtype=np.int64)
-    ref_models = ref_models[ref_models != int(target_model)]
-
-    k_out = int(num_ref_models) if num_ref_models is not None else -1
-
-    # Fixed global bounds (matches the reference Attack-R style).
-    signal_min = 0.0
-    signal_max = 1000.0
-
-    for i in range(N):
-        out_mask = ~keep_matrix[ref_models, i].astype(bool)
-        out_ids = ref_models[out_mask]
-
-        if out_ids.size == 0:
-            prediction[i] = -0.5
-            continue
-
-        if k_out > 0 and out_ids.size > k_out:
-            rs = np.random.RandomState(int(ref_selection_seed) + int(i))
-            out_ids = rs.choice(out_ids, size=k_out, replace=False)
-
-        tgt_loss = float(loss_mean[target_model, i])
-        ref_losses = loss_mean[out_ids, i].astype(np.float64)
-
-        losses_with_bounds = np.concatenate([[signal_min], np.sort(ref_losses), [signal_max]])
-        discrete_alpha = np.linspace(0.0, 1.0, len(losses_with_bounds))
-        pr = float(np.interp(tgt_loss, losses_with_bounds, discrete_alpha))
-
-        prediction[i] = -pr
-
-    return prediction.astype(np.float32), labels
-
-
 def attackr_scores_for_model_fast(
     target_model: int,
     ce_losses: torch.Tensor,
@@ -287,7 +163,7 @@ def attackr_scores_for_model_fast(
     num_ref_models: int = -1,
     ref_selection_seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Faster Attack-R. Numerically equivalent to `attackr_scores_for_model`.
+    """Attack-R with pre-sliced reference tensors and an inlined empirical CDF.
 
     Optimizations vs reference:
       1. Pre-slice `loss_mean[ref_models, :]` and `out_mask` once outside the
@@ -781,11 +657,6 @@ def compute_metrics(
     return roc_auc, acc, tpr_dict, threshold_dict
 
 
-def save_predicted_members_from_member_score(member_score: np.ndarray, threshold: float, output_path: str):
-    predicted_members = np.where(member_score >= threshold)[0]
-    np.save(output_path, predicted_members)
-
-
 def save_attack_scores(scores: np.ndarray, labels: np.ndarray, output_prefix: str):
     np.save(output_prefix + "_scores.npy", scores.astype(np.float32))
     np.save(output_prefix + "_labels.npy", labels.astype(np.int8))
@@ -843,7 +714,7 @@ def main():
     save_config(config, os.path.join(experiment_dir, "attack_config.yaml"))
     logger.info(f"Saved configuration to {experiment_dir}/attack_config.yaml")
 
-    dataset, _, _, _ = load_dataset(config, mode="inference")
+    dataset, _, _ = load_dataset(config, mode="inference")
     all_labels = np.array(dataset.targets)
 
     # Apply the experiment's saved deterministic subsample (if any) so attack
@@ -898,10 +769,6 @@ def main():
     if not isinstance(lira_num_refs_list, list):
         lira_num_refs_list = [lira_num_refs_list]
     lira_ref_seed = int(lira_cfg.get("ref_selection_seed", seed))
-    # Vectorized (numpy) LiRA scoring; ~20-30x faster than the per-sample
-    # Python-loop reference. Numerically equivalent. Disable to force the
-    # reference path (e.g. for cross-validation against an external impl).
-    lira_use_fast = bool(lira_cfg.get("use_fast", False))
 
     attackr_nb_aug = int(attackr_cfg.get("nb_augmentation", 1))
     attackr_num_refs_list = attackr_cfg.get("num_ref_models", [128, 32, 8, 4, 3, 2])
@@ -909,11 +776,6 @@ def main():
         attackr_num_refs_list = [attackr_num_refs_list]
     attackr_ref_seed = int(attackr_cfg.get("ref_selection_seed", seed))
     attackr_overwrite_signals = bool(attackr_cfg.get("overwrite_signals", False))
-    # Faster Attack-R: pre-slices reference tensors and inlines the empirical
-    # CDF interp (skips per-sample np.concatenate / np.linspace / np.interp
-    # overhead). Numerically equivalent to the reference; per-sample seeded
-    # RNG preserved. Mean speedup ~3-5x at our scale.
-    attackr_use_fast = bool(attackr_cfg.get("use_fast", False))
 
     rmia_nb_aug = int(rmia_cfg.get("nb_augmentation", 18))
     rmia_gamma = float(rmia_cfg.get("gamma", 2.0))
@@ -1265,7 +1127,7 @@ def main():
             # M values inherited fix_variance=True regardless of M.
             lira_fix_variance_iter = lira_fix_variance or (num_refs < 64)
 
-            _lira_fn = lira_scores_for_model_fast if lira_use_fast else lira_scores_for_model
+            _lira_fn = lira_scores_for_model_fast
             lira_scores, lira_labels = _lira_fn(
                 t, signals_lira_subset, keep_matrix, lira_fix_variance_iter, ref_models=lira_ref_models_t
             )
@@ -1316,7 +1178,7 @@ def main():
                 attackr_ref_models_t = _deterministic_choice(
                     ref_pool, num_refs, seed=int(attackr_ref_seed)
                 )
-            _attackr_fn = attackr_scores_for_model_fast if attackr_use_fast else attackr_scores_for_model
+            _attackr_fn = attackr_scores_for_model_fast
             atk_scores_raw, atk_labels = _attackr_fn(
                 t,
                 ce_attackr_subset,

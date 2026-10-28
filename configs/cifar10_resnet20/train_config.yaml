@@ -1,0 +1,53 @@
+# Configuration used for the paper's cifar10_resnet20 benchmark.
+# Run from the repository root; outputs go to experiment.checkpoint_dir.
+dataset:
+  data_dir: data
+  input_size: 32
+  loading: gpu
+  n_data_points: null
+  name: cifar10
+  num_classes: 10
+  pkeep: 0.5
+  subsample_seed: 42
+experiment:
+  checkpoint_dir: experiments/cifar10/resnet20/2026-01-23_2258
+  log_level: info
+model:
+  architecture: resnet20
+  cifar_stem: true
+  drop_rate: 0.0
+  input_channels: 3
+  pretrained: false
+seed: 42
+target_models:
+- 0
+- 25
+- 50
+- 75
+- 100
+- 125
+- 150
+- 175
+- 200
+- 250
+train_data_augmentation:
+- random_flip
+- random_crop
+- normalize
+training:
+  batch_size: 256
+  early_stopping: false
+  epochs: 100
+  eval_per_epoch: false
+  learning_rate: 0.1
+  lr_scheduler: cosine
+  momentum: 0.9
+  num_shadow_models: 266
+  num_workers: 4
+  optimizer: sgd
+  patience: 100
+  resume: false
+  save_models: true
+  save_step: 100
+  weight_decay: 5e-4
+use_cuda: true

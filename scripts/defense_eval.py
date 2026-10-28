@@ -32,11 +32,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import yaml
-from scipy.stats import rankdata
-from sklearn.metrics import auc as sk_auc, roc_curve
-from torch.utils.data import DataLoader, Subset
+from sklearn.metrics import roc_curve
+from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 for p in (str(ROOT), str(ROOT / "scripts")):
@@ -47,9 +45,7 @@ import attacks as A  # scripts/attacks.py
 from rare.analysis.utils import load_rare_locked_scores
 from rare.attacks.signals import convert_signals
 from rare.utils.common import load_checkpoint_safe
-from rare.utils.data import load_dataset, resolve_subsample
 from rare.utils.logits import LogitsGenerator
-from rare.utils.model import get_model
 
 BENCHMARKS = {
     "cifar10": ROOT / "experiments/cifar10/wrn28-2/2025-12-07_0140",

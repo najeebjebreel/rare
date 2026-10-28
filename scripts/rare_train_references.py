@@ -39,14 +39,14 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 import torch
 import yaml
 
 from rare.analysis.reference import load_or_train_multiple_references
-from rare.utils.common import append_runtime, setup_logger
+from rare.utils.common import setup_logger
 from rare.utils.data import load_dataset, resolve_subsample
 from rare.utils.gpu_dataset import is_gpu_resident_supported, load_image_dataset_to_gpu
 
@@ -80,7 +80,7 @@ def _load_raw_dataset(train_cfg: dict, dname: str, data_dir: str):
         return GTSRB(root=data_dir, split="train", download=False, transform=None)
     # Fallback: use load_dataset's transformed view; only used for unsupported
     # datasets where train-time augs ≈ no-op.
-    train_ds, _, _, _ = load_dataset(train_cfg, mode="train")
+    train_ds, _, _ = load_dataset(train_cfg, mode="train")
     return train_ds
 
 
@@ -127,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--bootstrap-frac", type=float,
                     default=float(ref_cfg.get("bootstrap_frac", 0.7)),
                     help="Bootstrap sample size = round(frac * |target "
-                         "non-members|). Default 0.7 = 70%.")
+                         "non-members|). Default 0.7 = 70%%.")
     ap.add_argument("--no-load-cache", dest="load_cache", action="store_false",
                     default=bool(ref_cfg.get("load_cache", True)),
                     help="Force re-train references even if cached on disk.")

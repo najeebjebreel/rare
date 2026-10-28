@@ -19,36 +19,17 @@ Prerequisite:
   Run scripts/train.py --trace-mode loss_only (or full) first so
   per_epoch_losses.npy is populated under each model_<t>/.
 
-Pool coverage strategy
-----------------------
+Pool coverage
+-------------
 Each invocation runs cross-target LOO within ONE pool: each pool member is
-scored by training the MLP on the other (pool_size - 1) members. To report
-Liu-MLP at multiple R budgets across all 10 targets, you must invoke this
-script multiple times so that every target appears in at least one pool of
-size R+1 for each desired R.
+scored by an MLP trained on the other (pool_size - 1) members. The paper uses
+LT-MLP at M=1 (pool size 2), so five disjoint pairs cover the ten targets:
 
-For the standard 10-target setup [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]:
-
-  # R=1 (pool size 2) — 5 disjoint pairs perfectly cover all 10 targets
   python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 0 25
   python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 50 75
   python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 100 125
   python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 150 175
   python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 200 250
-
-  # R=2 (pool size 3) — 10 is not divisible by 3; use 3 disjoint triples plus
-  # one filler pool with --score-only so the filler doesn't overwrite the
-  # already-scored 0, 25 R=2 scores.
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 0 25 50
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 75 100 125
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 150 175 200
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 0 25 250 --score-only 250
-
-  # R=4 (pool size 5) — 2 disjoint pools of 5 perfectly cover all 10 targets
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 0 25 50 75 100
-  python scripts/score_liu_mlp.py --experiment-dir $EXP --target-models 125 150 175 200 250
-
-Total: 11 invocations × ~30-60 s each = ~10 min for full coverage at R∈{1,2,4}.
 
 Usage:
   python scripts/score_liu_mlp.py \\
