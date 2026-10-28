@@ -18,6 +18,13 @@ gold set is smaller than the budget -- the analyze stage prints that ceiling
 per gold level and depth.
 
 Stages (run in order; each is idempotent):
+  --stage split    : writes <new-exp>/keep_indices.npy, the fixed split shared
+                     by all N=10 targets (default_rng(20260718), p_keep=1/2).
+                     Then train the targets with scripts/train.py
+                     (--trace-mode full), their reference with
+                     scripts/rare_train_references.py, and their logits with
+                     scripts/generate_logits.py, using the configs in
+                     configs/cifar10_wrn28-2_agreement/.
   --stage score    : LiRA-256 + LiRA-8 scores/thresholds for the new targets,
                      with validation against a stored original-target artifact.
   --stage analyze  : agreement sets, sanity checks, P@k table, CSV + LaTeX.
@@ -53,6 +60,7 @@ from rare.analysis.utils import (
     tail_metrics_at_k,
 )
 from rare.attacks.signals import convert_signals
+from paper_tabs_figs._tex import ADJUSTBOX_OPEN, dense_marks, pm_scriptstyle
 
 DEFAULT_POOL_EXP = ROOT / "experiments/cifar10/wrn28-2/2025-12-07_0140"
 DEFAULT_NEW_EXP = ROOT / "experiments/cifar10/wrn28-2/agreement_2026-07-18"
@@ -64,7 +72,8 @@ LIRA_REF_SEED = 42          # attacks.py: lira_ref_seed defaults to config seed
 K_FRACS = [0.01, 0.03, 0.05]
 AGREEMENT_PS = [0.5, 0.8, 1.0]
 DEFAULT_CSV = ROOT / "paper_tabs_figs/tables/agreement_gold_cifar10.csv"
-PAPER_RARE_P = {0.01: 0.95, 0.03: 0.83, 0.05: 0.72}  # CIFAR-10 headline row
+# Table 1, CIFAR10 RARE row: sanity reference for the own-target audit.
+PAPER_RARE_P = {0.01: 0.95, 0.03: 0.83, 0.05: 0.71}
 
 
 def _labels_cifar10() -> np.ndarray:
@@ -97,6 +106,25 @@ def _threshold_at_fpr(labels: np.ndarray, scores: np.ndarray, fpr_target: float)
     fpr_list, _, thresholds = roc_curve(labels.astype(int), scores)
     idx = np.where(fpr_list <= fpr_target)[0]
     return float(thresholds[idx[-1]]) if idx.size else float("inf")
+
+
+SPLIT_SEED = 20260718
+
+
+def stage_split(pool_exp: Path, new_exp: Path) -> None:
+    """Write the fixed member/non-member split used by every new target."""
+    n = np.load(pool_exp / "keep_indices.npy").shape[1]
+    row = np.random.default_rng(SPLIT_SEED).random(n) < 0.5
+    keep = np.tile(row, (N_NEW, 1))
+    path = new_exp / "keep_indices.npy"
+    if path.exists():
+        if not np.array_equal(np.load(path).astype(bool), keep):
+            raise SystemExit(f"{path} exists and differs from the seed-{SPLIT_SEED} split")
+        print(f"{path} already holds the fixed split ({int(row.sum())} members)")
+        return
+    new_exp.mkdir(parents=True, exist_ok=True)
+    np.save(path, keep)
+    print(f"wrote {path}: {N_NEW} x {n}, {int(row.sum())} members")
 
 
 def stage_score(pool_exp: Path, new_exp: Path) -> None:
@@ -174,8 +202,7 @@ def _load_new_gold(new_exp: Path, j: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _precisions(scores: np.ndarray, members: np.ndarray, vulnerable: np.ndarray) -> Dict[float, float]:
-    pr = tail_metrics_at_k(scores, members, K_FRACS, vulnerable=vulnerable,
-                           cap_k_at_gold=False, k_rounding="ceil")
+    pr = tail_metrics_at_k(scores, members, K_FRACS, vulnerable=vulnerable)
     return {kf: float(p) for kf, p in zip(K_FRACS, pr["precision"].to_numpy())}
 
 
@@ -243,7 +270,7 @@ def stage_analyze(pool_exp: Path, new_exp: Path, out_csv: Path) -> None:
         for j in range(N_NEW)
     ])  # (10, 3)
     own_mean = own.mean(axis=0)
-    print("\n=== Sanity: RARE vs own-target V^(i) (paper: 0.95 / 0.83 / 0.72) ===")
+    print("\n=== Sanity: RARE vs own-target V^(i) (Table 1 CIFAR10: 0.95 / 0.83 / 0.71) ===")
     print(f"  P@1/3/5 = {own_mean[0]:.3f} / {own_mean[1]:.3f} / {own_mean[2]:.3f}")
     for kf, got in zip(K_FRACS, own_mean):
         if abs(got - PAPER_RARE_P[kf]) > 0.06:
@@ -288,40 +315,56 @@ def stage_analyze(pool_exp: Path, new_exp: Path, out_csv: Path) -> None:
         arrow = "ROSE" if agr_p1 > own_p1 else "FELL"
         print(f"  {method}: P@1% {own_p1:.3f} -> {agr_p1:.3f} against V^(0.5): {arrow}")
 
-    # ---- LaTeX table ----
-    def fmt(mean: float, std: float) -> str:
-        return f"{mean:.2f}{{\\scriptstyle\\pm{std:.2f}}}"
+    # ---- LaTeX table (as in the paper) ----
+    # Bold marks the best method at each agreement level p; "single" rows
+    # (each target's own audit) carry no marks.
+    methods = ["LiRA-8", "LT-IQR", "LT-BTM-R", "RARE"]
+    method_tex = {"RARE": r"\rare{}"}
+    golds = ["own (N=1)"] + AGREEMENT_PS
+    row = {(m, g): df[(df.method == m) & (df.p == g)].iloc[0] for m in methods for g in golds}
+    marks = {}
+    for g in AGREEMENT_PS:
+        for k in (1, 3, 5):
+            best = dense_marks({m: row[(m, g)][f"p{k}_mean"] for m in methods}, 2, levels=1)
+            for m in methods:
+                marks[(m, g, k)] = best[m]
 
     lines = [
-        r"\begin{table}[t]",
-        r"\centering",
-        r"\caption{Agreement-based gold-set robustness on CIFAR-10 / WRN-28-2:"
-        r" P@$k$\% (mean$\pm$std over 10 fixed-split targets) against"
-        r" agreement gold sets $V^{(p)}$ from 10 LiRA-256 audits at"
-        r" FPR$\leq 10^{-4}$. Precision@$k$ retrieves"
-        r" $\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ members and is not"
-        r" truncated at $|V^{(p)}|$, so cells with"
-        r" $|V^{(p)}|<\lceil k\cdot n_{\mathrm{mem}}/100\rceil$ are bounded"
-        r" above by $|V^{(p)}|/\lceil k\cdot n_{\mathrm{mem}}/100\rceil$.}",
-        r"\label{tab:agreement-gold}",
-        r"\setlength{\tabcolsep}{4pt}",
-        r"\begin{tabular}{l l r ccc}",
+        "% Auto-generated by analysis/agreement_gold.py --stage analyze -- do not edit by hand.",
+        r"""\begin{table}[t]
+\centering
+\caption{P@$k$\% on CIFAR10 / WRN-28-2 against
+agreement-based gold sets $V^{(p)}$ over $N{=}10$ fixed-split
+targets, vs.\ each target's own single LiRA-256 audit.
+Mean$\pm$std over the 10 targets. LT-BTM-R uses the single reference
+shared by all targets, so its ranking is fixed and its std against a
+fixed $V^{(p)}$ is exactly zero. Cells where $|V^{(p)}|$ falls below the
+retrieval budget are bounded above by
+$|V^{(p)}|/\lceil k\,n_{\mathrm{mem}}/100\rceil$.}
+\label{tab:agreement-gold}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.05}""",
+        ADJUSTBOX_OPEN,
+        r"\begin{tabular}{llcccc}",
         r"\toprule",
-        r"\textbf{Method} & $p$ & $|V^{(p)}|$ & \textbf{P@1\%} & \textbf{P@3\%} & \textbf{P@5\%} \\",
+        r"\textbf{Method} & \textbf{Gold} & $|V|$ & \textbf{P@1\%} & \textbf{P@3\%} & \textbf{P@5\%} \\",
         r"\midrule",
     ]
-    for method in ["LiRA-8", "LT-IQR", "LT-BTM-R", "RARE"]:
-        for p in ["own (N=1)"] + AGREEMENT_PS:
-            r_ = df[(df.method == method) & (df.p == p)].iloc[0]
-            p_label = "single" if p == "own (N=1)" else f"{p:g}"
+    for mi, method in enumerate(methods):
+        lines.append(f"\\multirow{{{len(golds)}}}{{*}}{{{method_tex.get(method, method)}}}")
+        for g in golds:
+            r_ = row[(method, g)]
+            g_label = "single" if g == "own (N=1)" else f"$p{{=}}{g:.1f}$"
             lines.append(
-                f"{method} & {p_label} & {int(r_['gold_size'])} & "
-                + " & ".join(fmt(r_[f"p{k}_mean"], r_[f"p{k}_std"]) for k in (1, 3, 5))
+                f" & {g_label} & {int(r_['gold_size'])} & "
+                + " & ".join(pm_scriptstyle(r_[f"p{k}_mean"], r_[f"p{k}_std"], 2,
+                                            marks.get((method, g, k)))
+                             for k in (1, 3, 5))
                 + r" \\"
             )
-        if method != "RARE":
+        if mi < len(methods) - 1:
             lines.append(r"\midrule")
-    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    lines += [r"\bottomrule", r"\end{tabular}}", r"\end{table}"]
     tex_path = out_csv.with_suffix(".tex")
     tex_path.write_text("\n".join(lines) + "\n")
 
@@ -342,12 +385,14 @@ def stage_analyze(pool_exp: Path, new_exp: Path, out_csv: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=["score", "analyze"], required=True)
+    parser.add_argument("--stage", choices=["split", "score", "analyze"], required=True)
     parser.add_argument("--pool-exp", type=Path, default=DEFAULT_POOL_EXP)
     parser.add_argument("--new-exp", type=Path, default=DEFAULT_NEW_EXP)
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_CSV)
     args = parser.parse_args()
-    if args.stage == "score":
+    if args.stage == "split":
+        stage_split(args.pool_exp.resolve(), args.new_exp.resolve())
+    elif args.stage == "score":
         stage_score(args.pool_exp.resolve(), args.new_exp.resolve())
     else:
         stage_analyze(args.pool_exp.resolve(), args.new_exp.resolve(), args.output_csv.resolve())

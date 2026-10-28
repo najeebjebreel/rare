@@ -24,7 +24,6 @@ import _bootstrap  # noqa: F401
 
 import argparse
 import csv
-import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -45,7 +44,7 @@ DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
 def _load_pool_datasets(cfg: dict, exp_dir: Path, logger):
     """(train_dataset[aug], test_dataset, per_epoch_eval_dataset[no-aug]) over
     the same (possibly subsampled) train pool that keep_indices indexes."""
-    train_dataset, _keep_unused, test_dataset, per_epoch_eval_dataset = load_dataset(cfg)
+    train_dataset, test_dataset, per_epoch_eval_dataset = load_dataset(cfg)
     sub_path = exp_dir / "subsample_indices.npy"
     if sub_path.exists():
         sub = np.load(sub_path)
@@ -87,8 +86,8 @@ def _evaluate_one(exp_dir: Path, t: int, cfg: dict, keep_row: np.ndarray,
     with (model_dir / "metrics.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Best_epoch", "Train_loss", "Test_loss", "Train_acc (%)", "Test_acc (%)"])
-        w.writerow([best_epoch, f"{tr_loss:.4f}", f"{te_loss:.4f}",
-                    f"{tr_acc:.2f}", f"{te_acc:.2f}"])
+        w.writerow([best_epoch, f"{tr_loss:.6f}", f"{te_loss:.6f}",
+                    f"{tr_acc:.4f}", f"{te_acc:.4f}"])
     logger.info(
         f"model_{t:>3d} | Train {tr_loss:.4f}/{tr_acc:.2f}% "
         f"| Test {te_loss:.4f}/{te_acc:.2f}% -> {model_dir/'metrics.csv'}"

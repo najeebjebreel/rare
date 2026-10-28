@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from paper_tabs_figs._tex import figure_env  # noqa: E402
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -68,7 +70,7 @@ def _precision_at_frac(
     """
     pr = tail_metrics_at_k(
         scores, members, [float(frac)],
-        vulnerable=vulnerable, cap_k_at_gold=False, k_rounding="ceil",
+        vulnerable=vulnerable,
     )
     return float(pr.iloc[0]["precision"])
 
@@ -212,16 +214,13 @@ def plot_summary(summary: pd.DataFrame, output: Path) -> None:
     plt.close(fig)
 
 
+CAPTION = r"""P@5\% versus reference budget $M$ under LiRA-256 gold.
+\rare{} ($M{=}1$, dashed) and LT-MLP ($M{=}1$, dotted) are shown as
+horizontal references."""
+
+
 def write_tex(output_pdf: Path, tex_path: Path) -> None:
-    include_path = output_pdf.name if output_pdf.parent == tex_path.parent else output_pdf
-    include_s = str(include_path).replace("\\", "/")
-    tex = rf"""\begin{{figure*}}[t]
-\centering
-\includegraphics[width=\textwidth]{{{include_s}}}
-\caption{{P@5\% versus reference budget $M$ under LiRA-256 gold. \rare{{}} ($M=1$) and LT-MLP ($M=1$) are shown as horizontal lines.}}
-\label{{fig:pareto}}
-\end{{figure*}}
-"""
+    tex = figure_env(output_pdf.name, CAPTION, "fig:pareto")
     tex_path.write_text(tex, encoding="utf-8")
 
 

@@ -24,7 +24,7 @@ slightly from the original — same caveat as the existing CPU retrain.
 import io
 import os
 import pickle
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import Iterator, Optional, Tuple
 
 import numpy as np
 import torch
@@ -131,79 +131,6 @@ def _decode_cinic10_lmdb(lmdb_path: str) -> Tuple[np.ndarray, np.ndarray]:
 # =============================================================================
 # Per-batch GPU augmentation
 # =============================================================================
-# RGB→gray weights for saturation jitter (Rec. 601).
-_GRAY_WEIGHTS_RGB = (0.2989, 0.5870, 0.1140)
-
-
-def _gpu_color_jitter(
-    x: torch.Tensor,
-    brightness: float = 0.4,
-    contrast: float = 0.4,
-    saturation: float = 0.4,
-) -> torch.Tensor:
-    """Per-image brightness / contrast / saturation jitter on GPU.
-
-    Operates in [0, 1] pixel space (call BEFORE normalisation). Hue jitter is
-    intentionally omitted — it requires an RGB↔HSV detour that's expensive on
-    GPU and contributes little for CIFAR-class tasks.
-    """
-    B, C, H, W = x.shape
-    # Per-image scale factors in [1-mag, 1+mag].
-    db = (torch.rand(B, 1, 1, 1, device=x.device) * 2 - 1) * brightness
-    x = (x * (1.0 + db)).clamp(0.0, 1.0)
-
-    dc = (torch.rand(B, 1, 1, 1, device=x.device) * 2 - 1) * contrast
-    mean_per_img = x.mean(dim=(1, 2, 3), keepdim=True)
-    x = ((x - mean_per_img) * (1.0 + dc) + mean_per_img).clamp(0.0, 1.0)
-
-    ds = (torch.rand(B, 1, 1, 1, device=x.device) * 2 - 1) * saturation
-    gw = torch.tensor(_GRAY_WEIGHTS_RGB, device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
-    gray = (x * gw).sum(dim=1, keepdim=True)
-    x = ((x - gray) * (1.0 + ds) + gray).clamp(0.0, 1.0)
-    return x
-
-
-def _gpu_cutmix(
-    x: torch.Tensor,
-    y: torch.Tensor,
-    num_classes: int,
-    alpha: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Batch-level CutMix: paste a random rectangle from x[perm] onto each x[i],
-    return mixed images + soft labels (one-hot mixed by the actual box area).
-
-    Lambda is the area-adjusted mixing weight on the ORIGINAL image; soft
-    labels are `lam * onehot(y) + (1-lam) * onehot(y[perm])`. PyTorch's
-    `F.cross_entropy` accepts these soft targets directly (since 1.10).
-    """
-    B, C, H, W = x.shape
-    lam = float(np.random.beta(alpha, alpha))
-    perm = torch.randperm(B, device=x.device)
-
-    # Sample box centred at random (cy, cx); width/height from (1-lam) area.
-    cut_rat = float(np.sqrt(1.0 - lam))
-    cut_w = max(1, int(W * cut_rat))
-    cut_h = max(1, int(H * cut_rat))
-    cy = int(np.random.randint(H))
-    cx = int(np.random.randint(W))
-    y1 = max(cy - cut_h // 2, 0)
-    y2 = min(cy + cut_h // 2, H)
-    x1 = max(cx - cut_w // 2, 0)
-    x2 = min(cx + cut_w // 2, W)
-
-    x_out = x.clone()
-    x_out[:, :, y1:y2, x1:x2] = x[perm, :, y1:y2, x1:x2]
-
-    # Area-adjusted lambda (the box may be clipped at the edges).
-    box_area = max(1, (y2 - y1) * (x2 - x1))
-    lam_adj = 1.0 - box_area / float(H * W)
-
-    y_onehot = F.one_hot(y.long(), num_classes).to(x.dtype)
-    y_perm   = F.one_hot(y[perm].long(), num_classes).to(x.dtype)
-    y_mixed  = lam_adj * y_onehot + (1.0 - lam_adj) * y_perm
-    return x_out, y_mixed
-
-
 def gpu_train_augment(
     x_uint8: torch.Tensor,
     mean: torch.Tensor,
@@ -212,27 +139,12 @@ def gpu_train_augment(
     pad_mode: str = "reflect",
     *,
     y: Optional[torch.Tensor] = None,
-    aug_list: Optional[Sequence[str]] = None,
-    num_classes: Optional[int] = None,
-    cutmix_alpha: float = 1.0,
 ):
-    """RandomCrop(pad_mode) -> RandomHorizontalFlip(p=0.5) -> [color_jitter]
-    -> Normalize -> [CutMix], on GPU.
+    """RandomCrop(padding, pad_mode) -> RandomHorizontalFlip(p=0.5) -> Normalize, on GPU.
 
-    `x_uint8`: (B, 3, H, W) uint8. `y`: (B,) long (required when CutMix is on).
-    Returns `(x_aug, y_out)`. `y_out` is the original `y` (or `None` when not
-    given), unless `cutmix` is in `aug_list` and `num_classes` is provided, in
-    which case `y_out` is (B, num_classes) fp soft labels.
-
-    `aug_list`: subset of {'random_crop', 'random_flip', 'color_jitter',
-    'cutmix', 'normalize'}. `random_crop`/`random_flip`/`normalize` are
-    applied unconditionally for backward compat (the historical GPU path
-    always did them). New options:
-        'color_jitter' — per-image brightness/contrast/saturation jitter
-                         (hue intentionally skipped).
-        'cutmix'       — batch-level CutMix; requires `num_classes`.
+    `x_uint8`: (B, 3, H, W) uint8. Returns the augmented batch, or `(x, y)`
+    when `y` is given (the loader path always passes `y`).
     """
-    aug_list_norm = {a.lower() for a in (aug_list or [])}
     B, C, H, W = x_uint8.shape
     x = x_uint8.float() / 255.0                                                     # (B,C,H,W)
     if str(pad_mode).lower() == "constant":
@@ -248,26 +160,8 @@ def gpu_train_augment(
 
     flip_mask = torch.rand(B, device=x.device) < 0.5
     out = torch.where(flip_mask.view(B, 1, 1, 1), out.flip(-1), out)
-
-    if "color_jitter" in aug_list_norm:
-        out = _gpu_color_jitter(out)
-
     out = (out - mean) / std
-
-    if "cutmix" in aug_list_norm:
-        if y is None or num_classes is None:
-            raise ValueError(
-                "gpu_train_augment: 'cutmix' in aug_list requires `y` and `num_classes`."
-            )
-        out, y_out = _gpu_cutmix(out, y, int(num_classes), alpha=float(cutmix_alpha))
-        return out, y_out
-
-    # Backward-compat: callers that don't pass `y` get only `x` back. The
-    # loader path (which always passes `y`) receives `(x, y)` so it can
-    # forward soft labels when CutMix is enabled.
-    if y is None:
-        return out
-    return out, y
+    return out if y is None else (out, y)
 
 
 def gpu_eval_augment(
@@ -327,9 +221,6 @@ class GPUResidentLoader:
         drop_last: bool = True,
         crop_padding: int = 4,
         pad_mode: str = "reflect",
-        aug_list: Optional[Sequence[str]] = None,
-        num_classes: Optional[int] = None,
-        cutmix_alpha: float = 1.0,
     ):
         if images_uint8.device != labels.device:
             raise ValueError(
@@ -347,10 +238,6 @@ class GPUResidentLoader:
         self._drop_last = bool(drop_last)
         self._crop_padding = int(crop_padding)
         self._pad_mode = str(pad_mode)
-        # Augmentation extras (only consulted when train=True).
-        self._aug_list = list(aug_list) if aug_list else None
-        self._num_classes = int(num_classes) if num_classes is not None else None
-        self._cutmix_alpha = float(cutmix_alpha)
         self.dataset = _DummyDataset(self._indices.size(0))
 
     def __len__(self) -> int:
@@ -378,9 +265,6 @@ class GPUResidentLoader:
                     x_uint8, self._mean, self._std,
                     padding=self._crop_padding, pad_mode=self._pad_mode,
                     y=y,
-                    aug_list=self._aug_list,
-                    num_classes=self._num_classes,
-                    cutmix_alpha=self._cutmix_alpha,
                 )
                 yield x, y_out
             else:
@@ -413,13 +297,6 @@ def create_gpu_resident_loaders(
     bs = int(tr_cfg.get("batch_size", 256))
     eval_bs = int(tr_cfg.get("eval_batch_size", bs * 4))
 
-    # Augmentation extras read from the train_cfg top-level list. Anything
-    # outside the hardcoded {random_crop, random_flip, normalize} default is
-    # an additional GPU op the augmenter knows about (color_jitter, cutmix).
-    aug_list = list(train_cfg.get("train_data_augmentation", []) or [])
-    num_classes = int(train_cfg.get("dataset", {}).get("num_classes", 10))
-    cutmix_alpha = float(tr_cfg.get("cutmix_alpha", 1.0))
-
     n_train_full = train_images_uint8.size(0)
     all_train_idx = torch.arange(n_train_full, device=device, dtype=torch.long)
     n_test = test_images_uint8.size(0)
@@ -431,9 +308,6 @@ def create_gpu_resident_loaders(
         batch_size=bs, mean=mean, std=std,
         train=True, shuffle=True, drop_last=True,
         crop_padding=crop_padding, pad_mode=pad_mode,
-        aug_list=aug_list,
-        num_classes=num_classes,
-        cutmix_alpha=cutmix_alpha,
     )
     test_loader = GPUResidentLoader(
         test_images_uint8, test_labels, all_test_idx,

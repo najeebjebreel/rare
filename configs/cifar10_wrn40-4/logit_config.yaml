@@ -1,0 +1,52 @@
+# Configuration used for the paper's cifar10_wrn40-4 benchmark.
+# Run from the repository root; outputs go to experiment.checkpoint_dir.
+batch_size: 1024
+compile_mode: reduce-overhead
+dataset:
+  data_dir: data
+  input_size: 32
+  loading: gpu
+  n_data_points: null
+  name: cifar10
+  num_classes: 10
+  pkeep: 0.5
+  subsample_seed: 42
+experiment:
+  checkpoint_dir: experiments/cifar10/wrn40-4/2026-01-24_2029
+  log_level: info
+inference_data_augmentations:
+  mode: lira_aug
+  nb_augmentation: 2
+inference_mode: eval
+model:
+  architecture: wrn40-4
+  cifar_stem: true
+  drop_rate: 0.0
+  input_channels: 3
+  pretrained: false
+num_workers: 2
+overwrite: true
+seed: 42
+target_model: 100
+torch_compile: false
+train_data_augmentation:
+- random_flip
+- random_crop
+- normalize
+training:
+  batch_size: 256
+  early_stopping: true
+  epochs: 100
+  eval_per_epoch: false
+  learning_rate: 0.1
+  lr_scheduler: cosine
+  momentum: 0.9
+  num_shadow_models: 266
+  num_workers: 4
+  optimizer: sgd
+  patience: 30
+  resume: false
+  save_models: true
+  save_step: 100
+  weight_decay: 5e-4
+use_cuda: true

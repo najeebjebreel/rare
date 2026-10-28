@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from paper_tabs_figs._tex import figure_env  # noqa: E402
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -226,16 +228,12 @@ def plot_summary(summary: pd.DataFrame, output: Path) -> None:
     plt.close(fig)
 
 
+CAPTION = r"""Rank-biased overlap (RBO) with the LiRA-256 top-$k\%$ prefix. Higher is closer to the
+high-budget ranking."""
+
+
 def write_tex(output_pdf: Path, tex_path: Path) -> None:
-    include_path = output_pdf.name if output_pdf.parent == tex_path.parent else output_pdf
-    include_s = str(include_path).replace("\\", "/")
-    tex = rf"""\begin{{figure*}}[t]
-\centering
-\includegraphics[width=\textwidth]{{{include_s}}}
-\caption{{Rank-biased overlap (RBO) ranking agreement with the LiRA-256 top-$k$\% prefix.}}
-\label{{fig:ranking-rbo}}
-\end{{figure*}}
-"""
+    tex = figure_env(output_pdf.name, CAPTION, "fig:ranking-rbo")
     tex_path.write_text(tex, encoding="utf-8")
 
 

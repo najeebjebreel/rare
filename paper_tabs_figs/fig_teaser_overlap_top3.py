@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from paper_tabs_figs._tex import figure_env
 from rare.analysis.utils import _budget_at_frac, score_avg_min_q_reference_losses
 
 
@@ -110,7 +111,7 @@ def _top_indices(scores: np.ndarray, members: np.ndarray, top_frac: float) -> np
     this figure counts overlap at a fixed budget, it is not a capped metric).
     """
     valid_members = np.where(members & np.isfinite(scores))[0]
-    k = _budget_at_frac(float(top_frac), len(valid_members), "ceil")
+    k = _budget_at_frac(float(top_frac), len(valid_members))
     if k == 0:
         return np.asarray([], dtype=np.int64)
     return valid_members[np.argsort(scores[valid_members])[::-1][:k]]
@@ -147,60 +148,19 @@ def collect_rows(
     return pd.DataFrame(rows)
 
 
-def _format_complementarity_counts(counts: Dict[float, float]) -> str:
-    return ", ".join(f"{counts[k]:.0f}" for k in sorted(counts))
-
-
-def _write_tex_snippet(
-    output_pdf: Path,
-    tex_path: Path,
-    top_frac: float,
-    complementarity_counts: Dict[float, float],
-) -> None:
-    include_path = output_pdf.name if output_pdf.parent == tex_path.parent else output_pdf
-    include_s = str(include_path).replace("\\", "/")
-    top_pct = f"{top_frac * 100:g}"
-    label = output_pdf.stem
-    if label.startswith("fig_"):
-        label = label[4:]
-    tex = rf"""\begin{{figure}}[t]
-\centering
-\includegraphics[width=\columnwidth]{{{include_s}}}
-\caption{{
-Mean top-${top_pct}\%$ set per target on CIFAR-10 / WRN-28-2. Coloured:
-samples also detected by LiRA-256 at FPR$=10^{{-4}}$; grey: remaining.
-With a single reference model, \rare{{}} recovers more of the
-high-budget vulnerable set than the target-only LT-IQR and the
-same-budget supervised LT-MLP, at a fraction of the reference attacks'
-shadow cost.
-}}
-\label{{fig:{label}}}
-\end{{figure}}
-"""
+def _write_tex_snippet(output_pdf: Path, tex_path: Path, summary: pd.DataFrame) -> None:
+    """Caption as in the paper; the RARE-vs-LT-IQR gain is read from `summary`."""
+    overlap = summary.set_index("method")["lira_overlap_mean"]
+    gain = overlap["RARE (LT-IQR + LT-BTM-R)"] - overlap["LT-IQR"]
+    caption = (r"""Mean top-$3\%$ set per target on CIFAR10 / WRN-28-2, in
+absolute counts. Colored: members also flagged by LiRA-256 at
+FPR$=10^{-4}$; gray: the remainder. \rare{} ($M{=}1$) recovers
+""" + f"${gain:.0f}$" + r""" more members than target-only LT-IQR, and matches
+LiRA-8 and Attack-R-16 while using one reference model instead of
+$8$--$16$.""")
+    tex = figure_env(output_pdf.name, caption, "fig:teaser_overlap",
+                     star=False, width="0.6\\linewidth")
     tex_path.write_text(tex, encoding="utf-8")
-
-
-def compute_complementarity_counts(
-    exp: Path,
-    targets: Iterable[int],
-    *,
-    fpr: float,
-    top_fracs: Iterable[float],
-    num_refs: int,
-    btm_q: float,
-) -> Dict[float, float]:
-    counts: Dict[float, float] = {}
-    for top_frac in top_fracs:
-        per_target = []
-        for target in targets:
-            members, vulnerable = _load_lira_gold(exp, int(target), fpr)
-            scores = _method_scores(exp, int(target), members, num_refs, btm_q)
-            rare_top = set(_top_indices(scores["RARE (LT-IQR + LT-BTM-R)"], members, top_frac).tolist())
-            ltiqr_top = set(_top_indices(scores["LT-IQR"], members, top_frac).tolist())
-            extra = [idx for idx in rare_top - ltiqr_top if vulnerable[idx]]
-            per_target.append(len(extra))
-        counts[float(top_frac)] = float(np.mean(per_target))
-    return counts
 
 
 def plot_summary(rows: pd.DataFrame, output: Path, top_frac: float) -> None:
@@ -321,28 +281,12 @@ def main() -> None:
     rows.to_csv(output.with_suffix(".per_target.csv"), index=False)
     summary.to_csv(output.with_suffix(".summary.csv"))
     plot_summary(rows, output, top_frac=float(args.top_frac))
-    complementarity_counts = compute_complementarity_counts(
-        exp,
-        args.targets,
-        fpr=float(args.fpr),
-        top_fracs=[0.01, 0.05, 0.10],
-        num_refs=int(args.num_refs),
-        btm_q=float(args.btm_q),
-    )
-    _write_tex_snippet(
-        output,
-        output.with_suffix(".tex"),
-        top_frac=float(args.top_frac),
-        complementarity_counts=complementarity_counts,
-    )
+    _write_tex_snippet(output, output.with_suffix(".tex"), summary.reset_index())
 
     print(f"wrote {output}")
     print(f"wrote {output.with_suffix('.summary.csv')}")
     print(f"wrote {output.with_suffix('.tex')}")
     print(summary.to_string(float_format=lambda x: f"{x:.4f}"))
-    print("extra LiRA-vulnerable in RARE top-k but not LT-IQR top-k:")
-    for frac, count in complementarity_counts.items():
-        print(f"  top-{frac * 100:g}%: {count:.1f}")
 
 
 if __name__ == "__main__":
