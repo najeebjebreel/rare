@@ -242,12 +242,8 @@ def train_epoch(
 
         running_loss += loss.item()
         _, predicted = outputs.max(1)
-        # CutMix yields soft labels (B, num_classes); fall back to argmax of
-        # the soft target for the running-accuracy display. CE itself already
-        # accepts soft targets natively (PyTorch >= 1.10).
-        target_class = targets if targets.dim() == 1 else targets.argmax(dim=1)
-        total += target_class.size(0)
-        correct += predicted.eq(target_class).sum().item()
+        total += targets.size(0)
+        correct += predicted.eq(targets).sum().item()
 
         if logger is None and (
             (batch_idx + 1) % log_interval == 0
@@ -720,32 +716,6 @@ def train_model(
 
 
 @torch.no_grad()
-def get_model_predictions(model, data_loader, device, use_amp=True):
-    """Get predictions, targets, and per-class probabilities from a loader."""
-    model.eval()
-    preds, targets, confs = [], [], []
-
-    for inputs, labs in data_loader:
-        inputs = inputs.to(device, non_blocking=True)
-        labs = labs.to(device, non_blocking=True)
-        if use_amp:
-            with autocast('cuda'):
-                out = model(inputs)
-        else:
-            out = model(inputs)
-        prob = F.softmax(out, dim=1)
-        _, p = prob.max(1)
-        preds.append(p.cpu().numpy())
-        targets.append(labs.cpu().numpy())
-        confs.append(prob.cpu().numpy())
-
-    return (
-        np.concatenate(preds),
-        np.concatenate(targets),
-        np.concatenate(confs),
-    )
-
-
 @torch.no_grad()
 def compute_loss_values(model, data_loader, device, use_amp=True, amp_dtype="fp16"):
     """Compute per-sample CE loss values across a loader."""

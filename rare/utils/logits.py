@@ -68,7 +68,7 @@ class LogitsGenerator:
         self.logger.info(f"Using device: {self.device}")
 
         self.logger.info("Loading dataset for logits generation...")
-        self.full_dataset, _, _, _ = load_dataset(config, mode='inference')
+        self.full_dataset, _, _ = load_dataset(config, mode='inference')
 
         # Apply the experiment's saved deterministic subsample (if any) so
         # generated logits align with keep_indices over the (possibly subsampled)
@@ -272,7 +272,7 @@ class LogitsGenerator:
                 f"{len(missing)} shadow(s) are missing '{target_model_prefix}' "
                 f"and would need to be (re)scored. First missing: model_{preview}. "
                 f"Either retrain those shadows, copy in a checkpoint, or change "
-                f"`target_model` in config_generate_logits.yaml (NOT recommended)."
+                f"`target_model` in the experiment's logit_config.yaml (NOT recommended)."
             )
 
         # Augmentation descriptor logged once at INFO; per-model details (load,

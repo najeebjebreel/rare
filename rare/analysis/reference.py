@@ -131,32 +131,6 @@ def generate_reference_logits(
                 logger.info(f"  [ref logits] saved {out.name} {logits.shape}")
 
 
-def load_ref_margin_for_target(
-    rare_models_dir: str,
-    target_model: int,
-    n_epochs: int,
-    full_tag: str,
-    num_references: int,
-) -> List[np.ndarray]:
-    """Load per-reference-ref margin trajectories for a target. Returns
-    [(N, E) fp32, ...] of length `num_references`. Raises if a reference's
-    margin file is missing — there is no fallback.
-    """
-    rare_dir = Path(rare_models_dir)
-    margin_list: List[np.ndarray] = []
-    for r in range(int(num_references)):
-        p = _ref_margin_path(rare_dir, target_model, n_epochs, full_tag, r)
-        if not p.exists():
-            raise FileNotFoundError(
-                f"Missing reference margin artefact for target {target_model} ref {r}: {p}"
-            )
-        margin_list.append(np.load(p).astype(np.float32, copy=False))
-    return margin_list
-
-
-# =============================================================================
-# Eval helpers (loss + margin only)
-# =============================================================================
 def _loss_and_margin_from_logits(
     logits: torch.Tensor,
     y: torch.Tensor,
@@ -881,13 +855,7 @@ def train_single_reference_reference_gpu(
         reference_pred_class[idx_to_eval_cpu, epoch] = pred_cls_gpu.cpu().numpy()
         reference_pred_conf[idx_to_eval_cpu, epoch] = pred_conf_gpu.cpu().numpy()
 
-    # Reuse the shared GPU augmentation pipeline so the reference is trained
-    # under the same train_data_augmentation as the target (including CutMix
-    # + color_jitter on the GPU path). gpu_train_augment returns (x, y) when
-    # y is passed; y may be soft labels (B, num_classes) under CutMix, which
-    # nn.CrossEntropyLoss handles natively since torch 1.10.
-    aug_list = list(config.get("train_data_augmentation", []) or [])
-    cutmix_alpha = float(config.get("training", {}).get("cutmix_alpha", 1.0))
+    # Same GPU augmentation as the target (random crop + flip + normalize).
 
     n_full_batches = n_train // bs  # drop_last
     for epoch in range(int(n_epochs)):
@@ -898,11 +866,7 @@ def train_single_reference_reference_gpu(
             chunk = train_idx_shuffled[i * bs: (i + 1) * bs]
             x_uint8 = images_uint8_gpu[chunk]
             y = labels_gpu[chunk]
-            x, y_train = gpu_train_augment(
-                x_uint8, mean_gpu, std_gpu, padding=4,
-                y=y, aug_list=aug_list,
-                num_classes=int(num_classes), cutmix_alpha=cutmix_alpha,
-            )
+            x, y_train = gpu_train_augment(x_uint8, mean_gpu, std_gpu, padding=4, y=y)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', dtype=amp_torch_dtype):
                 outputs = model(x)

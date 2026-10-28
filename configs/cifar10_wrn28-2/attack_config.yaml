@@ -1,0 +1,133 @@
+# Configuration used for the paper's cifar10_wrn28-2 benchmark.
+# Run from the repository root; outputs go to experiment.checkpoint_dir.
+attackr:
+  nb_augmentation: 1
+  num_ref_models:
+  - 2
+  - 3
+  - 4
+  - 6
+  - 8
+  - 12
+  - 16
+  - 24
+  - 30
+  - 32
+  - 48
+  - 64
+  - 128
+  overwrite_signals: false
+  ref_selection_seed: 42
+  use_fast: true
+dataset:
+  data_dir: data
+  input_size: 32
+  name: cifar10
+  num_classes: 10
+  pkeep: 0.5
+experiment:
+  checkpoint_dir: experiments/cifar10/wrn28-2/2025-12-07_0140
+  log_level: info
+lira:
+  fix_variance: false
+  nb_augmentation: 2
+  num_ref_models:
+  - 2
+  - 3
+  - 4
+  - 6
+  - 8
+  - 10
+  - 12
+  - 16
+  - 24
+  - 32
+  - 48
+  - 64
+  - 128
+  - 256
+  offline: false
+  overwrite_signals: false
+  ref_selection_seed: 42
+  signal: log-logit-scaling
+  use_fast: true
+loss:
+  enabled: true
+  nb_augmentation: 1
+model:
+  architecture: wrn28-2
+  cifar_stem: true
+  drop_rate: 0.0
+  input_channels: 3
+  pretrained: false
+num_shadow_models: 266
+plot_metric: auc
+privacy_game: privacy_loss_model
+rmia:
+  augmentation: augmented
+  gamma: 2.0
+  gpu_chunk_size: 5000
+  nb_augmentation: 2
+  num_ref_models:
+  - 2
+  - 3
+  - 4
+  - 6
+  - 8
+  - 10
+  - 12
+  - 16
+  - 24
+  - 32
+  - 48
+  - 64
+  - 128
+  - 256
+  offline: false
+  offline_a: 0.3
+  overwrite_signals: true
+  proportiontocut: 0.2
+  ref_selection_seed: 42
+  signal: sm_taylor_softmax_relative
+  taylor_m: 0.6
+  taylor_n: 4
+  temperature: 2.0
+  top_k: -1
+  use_gpu: true
+seed: 42
+target_fprs:
+- 0.01
+- 0.001
+- 0.0001
+- 0.0
+target_models:
+- 0
+- 25
+- 50
+- 75
+- 100
+- 125
+- 150
+- 175
+- 200
+- 250
+train_data_augmentation:
+- random_flip
+- random_crop
+- normalize
+training:
+  batch_size: 256
+  early_stopping: true
+  epochs: 100
+  learning_rate: 0.1
+  lr_scheduler: cosine
+  momentum: 0.9
+  num_shadow_models: 266
+  num_workers: 4
+  optimizer: sgd
+  patience: 30
+  resume: false
+  save_models: true
+  save_step: 100
+  weight_decay: 5e-4
+use_cuda: true

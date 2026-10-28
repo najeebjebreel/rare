@@ -3,10 +3,17 @@
 Reads the runtime logs saved under each experiment directory and rebuilds
 every cell from raw measurements — no hand-entered numbers:
 
-  runtime.csv                 training / retrain / trace / score phases
+  runtime.csv                 training / retrain / trace phases, appended by
+                              scripts/train.py, rare_train_references.py,
+                              score_lt_iqr.py and score_liu_mlp.py; RARE
+                              scoring phases by scripts/measure_runtime.py
   logit_gen_runtime.csv       per-model logit-generation time by num_augs
   score_inference_runtime.csv cold per-target attack scoring (t_total)
   loss_forward_pass_runtime.csv  one A=1 forward pass over the train set
+                              (these three: scripts/measure_runtime.py)
+
+`--timings-dir runtime_measurements` builds the table from a fresh run of
+scripts/measure_runtime.py instead of the timings shipped with the paper.
 
 Cost model (per-target, A-to-Z, no amortization; A=2 logits are canonical
 for LiRA, A=1 for RMIA / Attack-R / LOSS):
@@ -46,6 +53,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from paper_tabs_figs._tex import ADJUSTBOX_OPEN, dense_marks, mark_math  # noqa: E402
 
 DEFAULT_BENCHMARKS = {
     "CIFAR10": ROOT / "experiments/cifar10/wrn28-2/2025-12-07_0140",
@@ -165,11 +174,35 @@ def _overhead(trace_rows, base_rows, base_stat: Stat) -> Stat:
     return s
 
 
-def collect(exp: Path):
+# scripts/train.py logs target retrains as target_train_*; the paper's logs
+# were written under the earlier target_retrain_* names. Both are accepted.
+_PHASE_ALIAS = {
+    "target_train_baseline": "target_retrain_baseline",
+    "target_train_loss_trace": "target_retrain_loss_trace",
+    "target_train_full_trace": "target_retrain_rare_trace",
+}
+
+
+# Inference-time scoring phases written by scripts/measure_runtime.py.
+_SCORING_PHASES = {"anomaly_ltiqr", "rare_ltbtmr", "anomaly_rare"}
+
+
+def collect(exp: Path, timings_dir: Path | None = None):
+    """Timing statistics for one benchmark.
+
+    Training-time phases come from `<exp>/runtime.csv`. The stand-alone
+    inference timings (the three CSVs below and the RARE scoring phases) come
+    from `timings_dir` when given -- a folder written by
+    scripts/measure_runtime.py -- and otherwise from `exp` itself.
+    """
+    src = Path(timings_dir) if timings_dir is not None else exp
     rows = _load_runtime_rows(exp / "runtime.csv")
+    if timings_dir is not None:
+        rows = [r for r in rows if r["phase"] not in _SCORING_PHASES]
+        rows += [r for r in _load_runtime_rows(src / "runtime.csv") if r["phase"] in _SCORING_PHASES]
     by_phase = {}
     for r in rows:
-        by_phase.setdefault(r["phase"], []).append(r)
+        by_phase.setdefault(_PHASE_ALIAS.get(r["phase"], r["phase"]), []).append(r)
 
     base_rows = by_phase.get("target_retrain_baseline") or by_phase["train"]
     base = Stat([r["sec"] for r in _dedup_min(base_rows)])
@@ -204,24 +237,28 @@ def collect(exp: Path):
     liu_score = phase_stat("liu_mlp_score",
                            lambda r: r["extra"] and r["extra"][0] == "1"
                            and not r["ts"].startswith("2026-07-24"))
-    rare_score = Stat.combine(phase_stat("anomaly_ltiqr"),
-                              phase_stat("anomaly_rare"))
+    # RARE score = LT-IQR + standardized sum, plus LT-BTM-R when it was timed
+    # separately (scripts/measure_runtime.py logs it as rare_ltbtmr).
+    rare_parts = [phase_stat("anomaly_ltiqr"), phase_stat("anomaly_rare")]
+    if "rare_ltbtmr" in by_phase:
+        rare_parts.append(phase_stat("rare_ltbtmr"))
+    rare_score = Stat.combine(*rare_parts)
 
     gen = {}
-    with open(exp / "logit_gen_runtime.csv", newline="") as f:
+    with open(src / "logit_gen_runtime.csv", newline="") as f:
         for row in csv.DictReader(f):
             gen.setdefault(int(row["num_augs"]), []).append(float(row["seconds"]))
     gen = {a: Stat(v) for a, v in gen.items()}
 
     score = {}
-    with open(exp / "score_inference_runtime.csv", newline="") as f:
+    with open(src / "score_inference_runtime.csv", newline="") as f:
         for row in csv.DictReader(f):
             score.setdefault((row["method"], int(row["M"])), []).append(
                 float(row["t_total"]))
     score = {k: Stat(v) for k, v in score.items()}
 
     loss_fwd = []
-    with open(exp / "loss_forward_pass_runtime.csv", newline="") as f:
+    with open(src / "loss_forward_pass_runtime.csv", newline="") as f:
         for row in csv.DictReader(f):
             loss_fwd.append(float(row["seconds"]))
     loss_fwd = Stat(loss_fwd)
@@ -272,52 +309,76 @@ def _fmt_num(v: float) -> str:
 
 
 def _fmt_std(v: float) -> str:
+    """Two significant figures, keeping a trailing zero (6.0, 0.63, 71)."""
     if v >= 100:
         return f"{v:,.0f}".replace(",", "{,}")
-    return f"{v:.2g}"
+    if v >= 10:
+        return f"{v:.0f}"
+    return f"{v:#.2g}"
 
 
 def _fmt_cell(s) -> str:
     if s is None:
         return "---"
-    return f"${_fmt_num(s.mean)}{{\\scriptsize\\pm{_fmt_std(s.std)}}}$"
+    return f"${_fmt_num(s.mean)}{{\\scriptstyle\\pm{_fmt_std(s.std)}}}$"
 
 
-def _fmt_speedup(v: float, deco: str = "") -> str:
-    body = f"{v:,.0f}".replace(",", "{,}") if v >= 1000 else f"{v:.1f}"
-    cell = f"{body}\\times"
-    if deco:
-        cell = f"\\{deco}{{{cell}}}"
-    return f"${cell}$"
+def _fmt_speedup(v: float, mark=None) -> str:
+    """Speedup rounded to the nearest integer, with an optional best/second mark."""
+    body = f"{v:,.0f}".replace(",", "{,}") + "\\times"
+    return f"${mark_math(body, mark)}$"
 
 
 METHOD_ORDER = [
     "LiRA (M=256, gold)", "LiRA (M=8)", "RMIA (M=8)", "Attack-R (M=16)",
     "LT-MLP (M=1)", "LT-IQR (M=0)", "LOSS (M=0)", "RARE (M=1)",
 ]
-SPEEDUP_DECO = {"LT-IQR (M=0)": "underline", "LOSS (M=0)": "mathbf"}
+# Row labels as typeset in the paper.
+TEX_LABEL = {
+    "LiRA (M=256, gold)": "LiRA ($M{=}256$, gold)", "LiRA (M=8)": "LiRA ($M{=}8$)",
+    "RMIA (M=8)": "RMIA ($M{=}8$)", "Attack-R (M=16)": "Attack-R ($M{=}16$)",
+    "LT-MLP (M=1)": "LT-MLP ($M{=}1$)", "LT-IQR (M=0)": "LT-IQR ($M{=}0$)",
+    "LOSS (M=0)": "LOSS ($M{=}0$)", "RARE (M=1)": "\\rare{} ($M{=}1$)",
+}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    ap.add_argument("--timings-dir", default=None,
+                    help="Folder name under each experiment dir holding re-measured inference "
+                         "timings from scripts/measure_runtime.py (e.g. runtime_measurements). "
+                         "Default: the timings shipped in the experiment dirs (the paper's).")
     args = ap.parse_args()
 
-    per_ds = {name: build_rows(collect(exp))
-              for name, exp in DEFAULT_BENCHMARKS.items()}
+    collected = {name: collect(exp, exp / args.timings_dir if args.timings_dir else None)
+                 for name, exp in DEFAULT_BENCHMARKS.items()}
+    per_ds = {name: build_rows(c) for name, c in collected.items()}
     gold = {name: rows["LiRA (M=256, gold)"][3].mean
             for name, rows in per_ds.items()}
+    # Fastest / second-fastest per dataset, on the displayed integer speedups.
+    speed = {n: {m: gold[n] / per_ds[n][m][3].mean for m in METHOD_ORDER}
+             for n in DEFAULT_BENCHMARKS}
+    marks = {n: dense_marks({m: round(v) for m, v in speed[n].items()}, 0)
+             for n in DEFAULT_BENCHMARKS}
+    target_train = np.mean([c["base"].mean for c in collected.values()])
 
     lines = [
         "% Auto-generated by paper_tabs_figs/tab_pipeline_cost.py -- do not edit by hand.",
-        "\\begin{table}[t!]",
-        "\\centering",
-        "\\caption{Per-target pipeline runtime on WRN-28-2. Speedup is relative to LiRA-256 on the same dataset.}",
-        "\\label{tab:pipeline-cost}",
-        "\\scriptsize",
-        "\\setlength{\\tabcolsep}{2.5pt}",
-        "\\renewcommand{\\arraystretch}{0.98}",
-        "\\resizebox{\\columnwidth}{!}{%",
+        r"""\begin{table}[t!]
+\centering
+\caption{Per-target pipeline runtime (in s) on WRN-28-2, mean$\pm$std over 10
+targets. \emph{Train} counts only models trained beyond the target
+itself, so the target's own training (also """ + f"$\\approx {target_train:.0f}$" + r"""\,s under the
+same configuration) is excluded from every row. Speedup is computed
+from the unrounded mean total runtimes relative to LiRA-256 on the same
+dataset and rounded to the nearest integer; 
+bold denotes the fastest and underline the second fastest
+method.}
+\label{tab:pipeline-cost}
+\setlength{\tabcolsep}{2.5pt}
+\renewcommand{\arraystretch}{0.98}""",
+        ADJUSTBOX_OPEN,
         "\\begin{tabular}{lcccccc}",
         "\\toprule",
         "\\textbf{Method} & \\textbf{Data} & \\textbf{Train} & \\textbf{Train artifacts}"
@@ -327,12 +388,11 @@ def main():
     for mi, method in enumerate(METHOD_ORDER):
         for di, name in enumerate(DEFAULT_BENCHMARKS):
             train, art, inf, total = per_ds[name][method]
-            speedup = gold[name] / total.mean
-            head = f"\\multirow{{3}}{{*}}{{{method}}}" if di == 0 else ""
+            head = f"\\multirow{{3}}{{*}}{{{TEX_LABEL[method]}}} " if di == 0 else ""
             lines.append(
-                f"{head} & {name} & {_fmt_cell(train)} & {_fmt_cell(art)}"
+                f"{head}& {name} & {_fmt_cell(train)} & {_fmt_cell(art)}"
                 f" & {_fmt_cell(inf)} & {_fmt_cell(total)}"
-                f" & {_fmt_speedup(speedup, SPEEDUP_DECO.get(method, ''))} \\\\"
+                f" & {_fmt_speedup(speed[name][method], marks[name][method])} \\\\"
             )
         if mi < len(METHOD_ORDER) - 1:
             lines.append("\\midrule")
@@ -351,7 +411,7 @@ def main():
     print(f"% RARE totals (s): {totals}")
     print(f"% RARE speedup range: {min(speeds):.0f}x - {max(speeds):.0f}x")
     for n in DEFAULT_BENCHMARKS:
-        c = collect(DEFAULT_BENCHMARKS[n])
+        c = collected[n]
         print(f"% {n}: ref train (no-trace rate) {c['base'].mean:.0f}s; "
               f"artifacts = target trace {c['rare_oh'].mean:.1f}s "
               f"+ ref trace {c['ref0_oh'].mean:.1f}s; "

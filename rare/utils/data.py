@@ -12,9 +12,9 @@ import lmdb
 import pickle
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset
 import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10, CIFAR100, GTSRB
+from torchvision.datasets import CIFAR10, CIFAR100
 from PIL import Image
 
 
@@ -22,34 +22,7 @@ DATASET_STATS = {
     'cifar10': ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     'cifar100': ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     'cinic10': ((0.4789, 0.4723, 0.4305), (0.2421, 0.2383, 0.2587)),
-    'gtsrb': ((0.3403, 0.3121, 0.3214), (0.2724, 0.2608, 0.2669)),
-    'imagenet': ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 }
-
-DATASET_NATIVE_SIZE = {
-    "cifar10": 32,
-    "cifar100": 32,
-    "cinic10": 32,
-    "gtsrb": None,
-    "imagenet": None
-}
-
-
-class TabularDataset(Dataset):
-    def __init__(self, features, labels, transform=None):
-        self.transform = transform
-        self.features = features if isinstance(features, torch.Tensor) else torch.tensor(features, dtype=torch.float32)
-        self.labels = labels if isinstance(labels, torch.Tensor) else torch.tensor(labels, dtype=torch.long)
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        x = self.features[idx]
-        y = self.labels[idx]
-        if self.transform:
-            x = self.transform(x)
-        return x, y
 
 
 class LMDBCINIC10(Dataset):
@@ -139,54 +112,24 @@ class TransformSubset(Dataset):
 
 
 def build_transforms(config, train=True):
-    ds_cfg = config.get('dataset', {})
-    name = ds_cfg.get('name', '').lower()
+    """CPU transforms for the 32x32 image datasets.
 
-    if name in ['purchase', 'texas', 'location']:
-        return None
-
-    input_size = ds_cfg.get('input_size', 32)
+    Training uses the config's `train_data_augmentation` list: `random_crop`
+    (4-pixel reflect padding), `random_flip` and `normalize`. Evaluation only
+    normalizes.
+    """
+    name = config.get('dataset', {}).get('name', '').lower()
     aug_list = config.get('train_data_augmentation', []) if train else []
     ops = []
-
-    native_input_size = DATASET_NATIVE_SIZE.get(name, None)
-    if native_input_size is None:
-        ops.append(transforms.Resize((input_size, input_size)))
-    else:
-        if input_size != native_input_size:
-            ops.append(transforms.Resize((input_size, input_size)))
-
     if train:
         for aug in aug_list:
             if aug == 'random_crop':
-                pad = max(1, input_size // 8)
-                ops.append(transforms.RandomCrop(input_size, padding=pad, padding_mode='reflect'))
+                ops.append(transforms.RandomCrop(32, padding=4, padding_mode='reflect'))
             elif aug == 'random_flip':
                 ops.append(transforms.RandomHorizontalFlip())
-            elif aug == 'random_rotation':
-                angle = 10 if name == 'gtsrb' else 15
-                ops.append(transforms.RandomRotation(angle))
-            elif aug == 'color_jitter':
-                if name == 'gtsrb':
-                    ops.append(transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05))
-                else:
-                    ops.append(transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1))
-
     ops.append(transforms.ToTensor())
-
-    if train and 'cutout' in aug_list:
-        cutout_size = input_size // 2
-        scale_ratio = (cutout_size * cutout_size) / float(input_size * input_size)
-        ops.append(transforms.RandomErasing(
-            p=1.0, scale=(scale_ratio, scale_ratio), ratio=(1.0, 1.0), value=0
-        ))
-
     if ('normalize' in aug_list) or (not train):
-        pretrained = config.get('model', {}).get('pretrained', False)
-        stats_key = 'imagenet' if (pretrained or name == 'imagenet') else name
-        mean, std = DATASET_STATS.get(stats_key, ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
-        ops.append(transforms.Normalize(mean, std))
-
+        ops.append(transforms.Normalize(*DATASET_STATS[name]))
     return transforms.Compose(ops)
 
 
@@ -219,77 +162,31 @@ def resolve_subsample(
     return idx
 
 
-def get_keep_indices(dataset_size, num_shadow_models, pkeep, seed=0):
-    np.random.seed(seed)
-    if num_shadow_models <= 0:
-        return np.random.uniform(0, 1, size=dataset_size) <= pkeep
-
-    keep_scores = np.random.uniform(0, 1, size=(num_shadow_models, dataset_size))
-    threshold = int(pkeep * num_shadow_models)
-    order = np.argsort(keep_scores, axis=0)
-    keep_indices = order < threshold
-    return keep_indices
-
-
 def load_dataset(config, mode='training'):
+    """Return (train_dataset, test_dataset, train_dataset_eval).
+
+    `train_dataset` carries the training transforms when mode == 'training';
+    `train_dataset_eval` always uses the evaluation transforms.
+    """
     dataset_name = config['dataset']['name'].lower()
     data_dir = config.get('dataset', {}).get('data_dir', 'data')
 
-    if mode == 'training':
-        train_transform = build_transforms(config, train=True)
-        test_transform = build_transforms(config, train=False)
-    else:
-        train_transform = test_transform = build_transforms(config, train=False)
+    test_transform = build_transforms(config, train=False)
+    train_transform = build_transforms(config, train=True) if mode == 'training' else test_transform
 
-    if dataset_name == 'cifar10':
-        train_dataset = CIFAR10(root=data_dir, train=True, download=True, transform=train_transform)
-        test_dataset = CIFAR10(root=data_dir, train=False, download=True, transform=test_transform)
-        train_dataset_eval = CIFAR10(root=data_dir, train=True, download=True, transform=test_transform)
-
-    elif dataset_name == 'cifar100':
-        train_dataset = CIFAR100(root=data_dir, train=True, download=True, transform=train_transform)
-        test_dataset = CIFAR100(root=data_dir, train=False, download=True, transform=test_transform)
-        train_dataset_eval = CIFAR100(root=data_dir, train=True, download=True, transform=test_transform)
-
+    if dataset_name in ('cifar10', 'cifar100'):
+        cls = CIFAR10 if dataset_name == 'cifar10' else CIFAR100
+        train_dataset = cls(root=data_dir, train=True, download=True, transform=train_transform)
+        test_dataset = cls(root=data_dir, train=False, download=True, transform=test_transform)
+        train_dataset_eval = cls(root=data_dir, train=True, download=True, transform=test_transform)
     elif dataset_name == 'cinic10':
-        train_dataset = LMDBCINIC10(os.path.join(data_dir, "cinic10", "train.lmdb"), transform=train_transform)
-        test_dataset = LMDBCINIC10(os.path.join(data_dir, "cinic10", "test.lmdb"), transform=test_transform)
-        train_dataset_eval = LMDBCINIC10(os.path.join(data_dir, "cinic10", "train.lmdb"), transform=test_transform)
-
-    elif dataset_name == 'gtsrb':
-        train_dataset = GTSRB(root=data_dir, split='train', download=True, transform=train_transform)
-        test_dataset = GTSRB(root=data_dir, split='test', download=True, transform=test_transform)
-        train_dataset_eval = GTSRB(root=data_dir, split='train', download=True, transform=test_transform)
-
-    elif dataset_name == 'purchase':
-        data_path = os.path.join(data_dir, dataset_name, 'features_labels.npy')
-        full_data = np.load(data_path)
-        full_features = torch.tensor(full_data[:, 1:].astype(np.float32))
-        full_labels_raw = full_data[:, 0].astype(np.int32) - 1
-        full_dataset = TabularDataset(full_features, full_labels_raw, transform=None)
-        train_size = int(0.3 * len(full_dataset))
-        test_size = len(full_dataset) - train_size
-        train_dataset, test_dataset = random_split(
-            full_dataset,
-            [train_size, test_size],
-            generator=torch.Generator().manual_seed(config.get('seed', 0))
-        )
-        train_dataset_eval = train_dataset
-
+        root = os.path.join(data_dir, "cinic10")
+        train_dataset = LMDBCINIC10(os.path.join(root, "train.lmdb"), transform=train_transform)
+        test_dataset = LMDBCINIC10(os.path.join(root, "test.lmdb"), transform=test_transform)
+        train_dataset_eval = LMDBCINIC10(os.path.join(root, "train.lmdb"), transform=test_transform)
     else:
-        raise ValueError(f"Unsupported dataset: {dataset_name}")
-
-    if mode == 'training':
-        keep_indices = get_keep_indices(
-            len(train_dataset),
-            config['training']['num_shadow_models'],
-            config['dataset']['pkeep'],
-            config['seed']
-        )
-    else:
-        keep_indices = None
-
-    return train_dataset, keep_indices, test_dataset, train_dataset_eval
+        raise ValueError(f"Unsupported dataset: {dataset_name} (expected cifar10, cifar100 or cinic10)")
+    return train_dataset, test_dataset, train_dataset_eval
 
 
 def create_data_loaders(train_dataset, test_dataset, config,

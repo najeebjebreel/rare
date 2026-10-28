@@ -5,6 +5,7 @@ experiments/
 
 # Papers (incl. third-party copyrighted PDFs) and local scratch notes
 papers/
+*.zip
 CLI commands.txt
 
 # Python

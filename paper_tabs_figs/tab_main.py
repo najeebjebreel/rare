@@ -11,7 +11,8 @@ Rebuilds every cell from on-disk artifacts:
               from paper_tabs_figs/tab_pipeline_cost.py (same runtime
               logs as tab:pipeline-cost) -- relative to LiRA-256.
 
-Best per column is bold, second best underlined.
+Bold marks the best and underline the second best displayed value in each
+column; ties after rounding share a mark. Speedups are rounded to integers.
 
 Usage:
   python paper_tabs_figs/tab_main.py
@@ -21,7 +22,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -33,11 +33,10 @@ for p in (str(ROOT), str(ROOT / "scripts"), str(Path(__file__).parent)):
         sys.path.insert(0, p)
 
 import tab_pipeline_cost as tpc  # noqa: E402  (sibling module)
+from paper_tabs_figs._tex import (  # noqa: E402
+    ADJUSTBOX_OPEN, column_marks, dense_marks, mark_text, pm_scriptsize)
 
-_spec = importlib.util.spec_from_file_location(
-    "main_table_mod", ROOT / "scripts" / "main_table.py")
-_mt = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mt)
+import paper_tabs_figs._scores as _mt  # noqa: E402
 
 DEFAULT_TARGETS = [0, 25, 50, 75, 100, 125, 150, 175, 200, 250]
 DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_main.tex"
@@ -47,19 +46,19 @@ K_LABELS = ["P@1\\%", "P@3\\%", "P@5\\%"]
 # (paper label, pipeline-cost label for the speedup column, score loader)
 METHODS = [
     ("LiRA (M=8)", "LiRA (M=8)",
-     lambda exp, t: _mt._load_attack_scores(exp, t, "LiRA", 8)),
+     lambda exp, t: _mt.load_attack_scores(exp, t, "LiRA", 8)),
     ("RMIA (M=8)", "RMIA (M=8)",
-     lambda exp, t: _mt._load_attack_scores(exp, t, "RMIA", 8)),
+     lambda exp, t: _mt.load_attack_scores(exp, t, "RMIA", 8)),
     ("Attack-R (M=16)", "Attack-R (M=16)",
-     lambda exp, t: _mt._load_attack_scores(exp, t, "Attack-R", 16)),
+     lambda exp, t: _mt.load_attack_scores(exp, t, "Attack-R", 16)),
     ("LT-MLP (M=1)", "LT-MLP (M=1)",
-     lambda exp, t: _mt._load_liu_mlp(exp, t, 1)),
+     lambda exp, t: _mt.load_liu_mlp(exp, t, 1)),
     ("LT-IQR (M=0)", "LT-IQR (M=0)",
-     lambda exp, t: _mt._load_lt_iqr(exp, t)),
+     lambda exp, t: _mt.load_lt_iqr(exp, t)),
     ("LOSS (M=0)", "LOSS (M=0)",
-     lambda exp, t: _mt._load_loss_scores(exp, t)),
+     lambda exp, t: _mt.load_loss_scores(exp, t)),
     ("\\rare{} (M=1)", "RARE (M=1)",
-     lambda exp, t: _mt._load_rare(exp, t, 1)),
+     lambda exp, t: _mt.load_rare(exp, t, 1)),
 ]
 GROUP_BREAKS = {"LT-IQR (M=0)", "\\rare{} (M=1)"}  # \midrule before these rows
 
@@ -71,15 +70,19 @@ def precision_at_k(exp: Path, targets, method_loader, fpr: float):
     """
     out = []
     for t in targets:
-        gold_scores, members, vulnerable = _mt._load_lira_gold(exp, t, fpr)
+        gold_scores, members, vulnerable = _mt.load_lira_gold(exp, t, fpr)
         scores = method_loader(exp, t)
         pr = _mt.tail_metrics_at_k(
             scores, members, K_FRACS,
             vulnerable=vulnerable, gold_scores=gold_scores,
-            cap_k_at_gold=False, k_rounding="ceil",
         )
         out.append([float(pr.iloc[i]["precision"]) for i in range(len(K_FRACS))])
     return np.asarray(out)
+
+
+def mean_gold_size(exp: Path, targets, fpr: float) -> float:
+    """Mean |V| (LiRA-256 vulnerable members) over the targets."""
+    return float(np.mean([_mt.load_lira_gold(exp, t, fpr)[2].sum() for t in targets]))
 
 
 def speedups():
@@ -94,27 +97,9 @@ def speedups():
     return out
 
 
-def _rank_decorations(col_means):
-    """{row index: 'textbf'|'underline'} for the best / second best."""
-    order = np.argsort(-np.asarray(col_means))
-    deco = {int(order[0]): "textbf"}
-    if len(order) > 1:
-        deco[int(order[1])] = "underline"
-    return deco
-
-
-def _fmt_p(mean: float, std: float, deco: str | None) -> str:
-    body = f"{mean:.2f}"
-    if deco:
-        body = f"\\{deco}{{{body}}}"
-    return f"{body}{{\\scriptsize$\\pm${std:.2f}}}"
-
-
-def _fmt_speedup(v: float, deco: str | None) -> str:
-    body = f"{v:,.0f}".replace(",", "{,}") if v >= 1000 else f"{v:.1f}"
-    if deco:
-        body = f"\\{deco}{{{body}}}"
-    return f"{body}$\\times$"
+def _fmt_int(v: float) -> str:
+    """Integer with LaTeX thousands separators: 12882 -> 12{,}882."""
+    return f"{v:,.0f}".replace(",", "{,}")
 
 
 def main():
@@ -144,43 +129,47 @@ def main():
     speed = speedups()
     speed_col = [speed[m[1]] for m in METHODS]
 
-    col_deco = [_rank_decorations(cell_mean[:, c]) for c in range(cell_mean.shape[1])]
-    speed_deco = _rank_decorations(speed_col)
+    # Marks on displayed values: P@k at 2 dp, speedup as a rounded integer.
+    marks = column_marks({mi: cell_mean[mi] for mi in range(len(METHODS))}, 2)
+    speed_marks = dense_marks({mi: round(v) for mi, v in enumerate(speed_col)}, 0)
+    mean_v = [mean_gold_size(tpc.DEFAULT_BENCHMARKS[n], args.targets, args.fpr)
+              for n in ds_names]
 
-    header = [
+    lines = [
         "% Auto-generated by paper_tabs_figs/tab_main.py -- do not edit by hand.",
-        "\\begin{table*}[t]",
-        "\\centering",
-        "\\caption{Main results on CIFAR10, CIFAR100, and CINIC10 under LiRA-256"
-        " gold. \\rare{} uses $M{=}1$ and $q=50\\%$; reference baselines use the"
-        " budgets shown in the method names; avg.\\ entries are the mean and"
-        " standard deviation across the three datasets. Bold denotes the best"
-        " and underline the second best in each column.}",
-        "\\label{tab:main}",
-        "\\setlength{\\tabcolsep}{3pt}",
-        "\\renewcommand{\\arraystretch}{1.05}",
-        "\\resizebox{\\textwidth}{!}{%",
+        r"""\begin{table*}[t]
+\centering
+\caption{Main results on CIFAR10, CIFAR100, and CINIC10 under LiRA-256 gold at
+$\mathrm{FPR}\le 10^{-4}$, whose vulnerable sets average """
+        + f"${_fmt_int(mean_v[0])}$, ${_fmt_int(mean_v[1])}$\nand ${_fmt_int(mean_v[2])}$"
+        + r""" members respectively. \rare{} uses $M{=}1$ and $q=50\%$;
+reference baselines use the budgets shown in the method names; avg.\ entries
+are the mean and standard deviation across the three datasets.
+Bold denotes the best and underline the second best
+in each column; methods tied after rounding share the best mark.}
+\label{tab:main}
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.05}""",
+        ADJUSTBOX_OPEN,
         "\\begin{tabular}{l ccc ccc ccc ccc r}",
         "\\toprule",
         "\\multirow{2}{*}{\\textbf{Method}}",
     ]
     for name in ds_names + ["Avg."]:
-        header.append(f"  & \\multicolumn{{3}}{{c}}{{\\textbf{{{name}}}}}")
-    header += [
+        lines.append(f"  & \\multicolumn{{3}}{{c}}{{\\textbf{{{name}}}}}")
+    lines += [
         "  & \\multirow{2}{*}{\\textbf{Speedup}} \\\\",
         "\\cmidrule(lr){2-4} \\cmidrule(lr){5-7} \\cmidrule(lr){8-10} \\cmidrule(lr){11-13}",
         " " + " ".join(f"& \\textbf{{{k}}}" for _ in range(4) for k in K_LABELS) + " & \\\\",
         "\\midrule",
     ]
-    lines = header
     for mi, (label, _, _) in enumerate(METHODS):
         if label in GROUP_BREAKS:
             lines.append("\\midrule")
         cells = [label]
         for c in range(cell_mean.shape[1]):
-            cells.append(_fmt_p(cell_mean[mi, c], cell_std[mi, c],
-                                col_deco[c].get(mi)))
-        cells.append(_fmt_speedup(speed_col[mi], speed_deco.get(mi)))
+            cells.append(pm_scriptsize(cell_mean[mi, c], cell_std[mi, c], 2, marks[mi][c]))
+        cells.append(mark_text(_fmt_int(speed_col[mi]), speed_marks[mi]) + "$\\times$")
         lines.append(" & ".join(cells) + " \\\\")
     lines += ["\\bottomrule", "\\end{tabular}}", "\\end{table*}"]
 
@@ -197,7 +186,8 @@ def main():
         print(f"% Avg {k}: RARE {cell_mean[ri, -3 + j]:.2f}"
               f"+/-{cell_std[ri, -3 + j]:.2f}; "
               f"LiRA-8 {cell_mean[li, -3 + j]:.2f}; "
-              f"delta {(cell_mean[ri, -3 + j] - cell_mean[li, -3 + j]) * 100:+.1f} pp")
+              f"delta {(cell_mean[ri, -3 + j] - cell_mean[li, -3 + j]) * 100:+.1f} pp "
+              f"(displayed values: {(round(cell_mean[ri, -3 + j], 2) - round(cell_mean[li, -3 + j], 2)) * 100:+.0f} pp)")
     print(f"% Speedup: RARE {speed_col[ri]:.1f}x vs LiRA-8 {speed_col[li]:.1f}x "
           f"(ratio {speed_col[ri] / speed_col[li]:.1f}x)")
 

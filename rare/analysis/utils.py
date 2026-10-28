@@ -19,9 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import torch
 import yaml
-from scipy import stats
 from torch.utils.data import Dataset
 
 
@@ -108,19 +106,9 @@ class IndexedDataset(Dataset):
 # =============================================================================
 # Score-evaluation primitives
 # =============================================================================
-def _budget_at_frac(k_frac: float, n: int, k_rounding: str) -> int:
-    """Retrieval budget k at depth `k_frac` over `n` valid members.
-
-    k_rounding="round" is the legacy rule; "ceil" matches the Precision@k
-    definition of Pollock et al. (k = ceil(k% * n_members)).
-    """
-    if k_rounding == "ceil":
-        k = int(np.ceil(float(k_frac) * n))
-    elif k_rounding == "round":
-        k = int(round(float(k_frac) * n))
-    else:
-        raise ValueError(f"k_rounding must be 'round'|'ceil', got {k_rounding!r}")
-    return max(0, min(k, n))
+def _budget_at_frac(k_frac: float, n: int) -> int:
+    """Retrieval budget m_k = ceil(k * n) over `n` valid members (Pollock et al.)."""
+    return max(0, min(int(np.ceil(float(k_frac) * n)), n))
 
 
 def tail_metrics_at_k(
@@ -128,198 +116,37 @@ def tail_metrics_at_k(
     keep_mask: np.ndarray,
     k_fracs: List[float],
     *,
-    vulnerable: Optional[np.ndarray] = None,
+    vulnerable: np.ndarray,
     gold_scores: Optional[np.ndarray] = None,
-    pool_member_scores: Optional[List[np.ndarray]] = None,
-    gold_topk: bool = False,
-    cap_k_at_gold: bool = True,
-    k_rounding: str = "round",
 ) -> pd.DataFrame:
-    """Top-k tail metrics for ranking-quality evaluation.
+    """Top-k% precision and recall of a member ranking against a gold set V.
 
-    Budget parameters (apply to every mode unless noted):
+    With n_mem valid members and m_k = ceil(k * n_mem):
+        P@k% = |P_k n V| / m_k        R@k% = |P_k n V| / |V|
+    where P_k are the m_k highest-scoring members. The budget is not truncated
+    at |V|, so P@k% <= |V| / m_k whenever m_k > |V|.
 
-      k_rounding    "round" (legacy) or "ceil". The retrieval budget at depth
-                    k% is round(k% * n_members) or ceil(k% * n_members).
-      cap_k_at_gold lira mode only. True (legacy) truncates the budget to |V|,
-                    giving the capped Precision |M_k n V| / min(k, |V|).
-                    False leaves the budget untruncated, giving the standard
-                    uncapped Precision@k = |M_k n V| / k of Pollock et al.
-                    Under the uncapped rule Precision is mechanically bounded
-                    by |V|/k whenever |V| < k, so read it alongside the
-                    achievable ceiling min(k, |V|) / |V| for recall.
-
-    Three modes selected by the supplied gold reference:
-
-    union mode  (pool_member_scores is not None):
-      pool_member_scores: list of score arrays already restricted to members
-        (one per pool method after self-exclusion), same ordering as
-        method_scores[keep_mask].
-      At each k, builds V_M(k) = union of top-k member samples from each
-      pool array. All indices are in member-subarray coordinates.
-        precision  = |M_k ∩ V_M(k)| / k
-        recall     = |M_k ∩ V_M(k)| / |V_M(k)|
-        jaccard    = NaN  (|V| varies, generally != k, so size-asymmetric)
-        tail_rho   = NaN  (binary gold, no continuous reference ranking)
-        gold_n     = |V_M(k)|
-
-    lira_topk mode  (gold_topk=True with gold_scores; pool_member_scores None):
-      gold_scores: continuous LiRA scores (over all N samples).
-      At each k, V_k = top-k% of LiRA scores among members; |V_k| = k.
-        precision  = |M_k ∩ V_k| / k
-        recall     = |M_k ∩ V_k| / k       (== precision; |V_k|=k)
-        jaccard    = |M_k ∩ V_k| / |M_k ∪ V_k|
-        tail_rho   = Spearman(method, gold) on M_k ∩ V_k (intersection only)
-        gold_n     = k
-
-    lira mode  (gold_scores and vulnerable are not None):
-      vulnerable: fixed binary label (LiRA-thr-defined, over all N samples).
-      gold_scores: continuous LiRA scores (over all N samples).
-        precision  = |M_k ∩ V| / k       [k capped at |V| if cap_k_at_gold]
-        recall     = |M_k ∩ V| / |V|
-        jaccard    = NaN  (|V|!=k, size-asymmetric — see lira_topk mode)
-        tail_rho   = Spearman(method, gold) on M_k ∩ V (the LiRA-thr
-                     vulnerable gold), measuring within-tail rank
-                     agreement on the gold members M_k recovers
-        gold_n     = |V|
-
-      Note: with cap_k_at_gold=True the top-k size is capped at |V|, so the
-      `k_samples` column reports min(round(k% · n_members), |V|). This
-      prevents Precision from being mechanically ceiling-limited to
-      |V|/k_samples when the requested k% exceeds |V|/n_members (e.g.,
-      k=10% under FPR=1e-4 where |V| ≈ |members|/20). Compare
-      k_samples vs gold_n to see whether the cap fired for a given row.
-      With cap_k_at_gold=False no truncation is applied and `k_samples` is
-      the raw budget.
+    Members whose method score (or, when given, gold score) is not finite are
+    excluded from n_mem. Returns one row per k with columns
+    k, k_samples (= m_k), precision, recall, gold_n (= |V|).
     """
-    if k_rounding not in ("round", "ceil"):
-        raise ValueError(f"k_rounding must be 'round'|'ceil', got {k_rounding!r}")
     s_m = np.asarray(method_scores, dtype=np.float32)[keep_mask]
     ok = np.isfinite(s_m)
-
-    # --- union mode ---
-    if pool_member_scores is not None:
-        ok_idx = np.where(ok)[0]
-        s_valid = s_m[ok]
-        n = s_valid.size
-        rows: List[Dict[str, Any]] = []
-        for kf in k_fracs:
-            k = _budget_at_frac(kf, n, k_rounding)
-            row: Dict[str, Any] = {"k": f"{kf * 100:.1f}%", "k_samples": k}
-            if k == 0:
-                row.update(precision=0.0, recall=0.0, jaccard=float("nan"),
-                           tail_rho=float("nan"), gold_n=0)
-                rows.append(row)
-                continue
-            # Method top-k in member-subarray coordinates.
-            order_m = np.argpartition(s_valid, -k)[-k:]
-            set_m = {int(ok_idx[i]) for i in order_m}
-            # Union gold-set: top-k from each pool array.
-            gold_set: set = set()
-            for ps in pool_member_scores:
-                ps_f = np.where(np.isfinite(ps), ps, -np.inf).astype(np.float32)
-                k_p = min(k, ps_f.size)
-                if k_p > 0:
-                    gold_set.update(int(i) for i in np.argpartition(ps_f, -k_p)[-k_p:])
-            inter = len(set_m & gold_set)
-            row["precision"] = inter / k
-            row["recall"] = inter / len(gold_set) if gold_set else 0.0
-            # Jaccard is only meaningful when |gold|=k (lira_topk regime).
-            # Under union mode |gold| varies and is generally != k, so the
-            # Jaccard set-similarity is size-asymmetric — drop it.
-            row["jaccard"] = float("nan")
-            row["tail_rho"] = float("nan")
-            row["gold_n"] = len(gold_set)
-            rows.append(row)
-        return pd.DataFrame(rows)
-
-    # --- lira_topk mode ---
-    if gold_topk:
-        if gold_scores is None:
-            raise ValueError("gold_topk=True requires gold_scores.")
-        g_m = np.asarray(gold_scores, dtype=np.float32)[keep_mask]
-        ok2 = ok & np.isfinite(g_m)
-        ok_idx = np.where(ok2)[0]
-        s_valid = s_m[ok2]
-        g_valid = g_m[ok2]
-        n = s_valid.size
-        rows = []
-        for kf in k_fracs:
-            k = _budget_at_frac(kf, n, k_rounding)
-            row = {"k": f"{kf * 100:.1f}%", "k_samples": k}
-            if k == 0:
-                row.update(precision=0.0, recall=0.0, jaccard=float("nan"),
-                           tail_rho=float("nan"), gold_n=0)
-                rows.append(row)
-                continue
-            order_m = np.argpartition(s_valid, -k)[-k:]
-            order_g = np.argpartition(g_valid, -k)[-k:]
-            set_m = {int(i) for i in order_m}
-            set_g = {int(i) for i in order_g}
-            inter_idx = np.array(sorted(set_m & set_g), dtype=np.intp)
-            union_sz = len(set_m | set_g)
-            row["precision"] = inter_idx.size / k
-            row["recall"] = inter_idx.size / k  # |V_k| == k
-            row["jaccard"] = inter_idx.size / union_sz if union_sz > 0 else float("nan")
-            row["tail_rho"] = (
-                float(stats.spearmanr(s_valid[inter_idx], g_valid[inter_idx])[0])
-                if inter_idx.size >= 2 else float("nan")
-            )
-            row["gold_n"] = k
-            rows.append(row)
-        return pd.DataFrame(rows)
-
-    # --- lira mode ---
-    g_m = np.asarray(gold_scores, dtype=np.float32)[keep_mask] if gold_scores is not None else None
-    v_m = np.asarray(vulnerable, dtype=np.int32)[keep_mask] if vulnerable is not None else None
-    if g_m is not None:
-        ok = ok & np.isfinite(g_m)
+    if gold_scores is not None:
+        ok &= np.isfinite(np.asarray(gold_scores, dtype=np.float32)[keep_mask])
     s_valid = s_m[ok]
-    g_valid = g_m[ok] if g_m is not None else None
-    v_valid = v_m[ok] if v_m is not None else None
-    n = s_valid.size
-    n_v = int(v_valid.sum()) if v_valid is not None else 0
+    v_valid = np.asarray(vulnerable, dtype=np.int32)[keep_mask][ok]
+    n, n_v = s_valid.size, int(v_valid.sum())
 
     rows = []
     for kf in k_fracs:
-        k = _budget_at_frac(kf, n, k_rounding)
-        # Legacy capped rule: cap top-k size at |V| so Precision isn't
-        # mechanically limited to |V|/k when the requested k% exceeds the
-        # vulnerable-set fraction (the FPR=1e-4, k=10% ceiling case).
-        # cap_k_at_gold=False gives the standard uncapped Precision@k.
-        if cap_k_at_gold and v_valid is not None and n_v > 0:
-            k = min(k, n_v)
-        row = {"k": f"{kf * 100:.1f}%", "k_samples": k}
+        k = _budget_at_frac(kf, n)
+        row = {"k": f"{kf * 100:.1f}%", "k_samples": k, "gold_n": n_v}
         if k == 0:
-            row.update(precision=0.0, recall=0.0, jaccard=float("nan"),
-                       tail_rho=float("nan"), gold_n=n_v)
-            rows.append(row)
-            continue
-        order_m = np.argpartition(s_valid, -k)[-k:]
-        # Precision / recall vs binary label.
-        if v_valid is not None:
-            tp = int(v_valid[order_m].sum())
-            row["precision"] = tp / k
-            row["recall"] = tp / n_v if n_v > 0 else 0.0
+            row.update(precision=0.0, recall=0.0)
         else:
-            row["precision"] = float("nan")
-            row["recall"] = float("nan")
-        row["gold_n"] = n_v
-        # Jaccard NOT computed under lira mode: |V|!=k makes the Jaccard
-        # set-similarity size-asymmetric. Jaccard is only natural under
-        # lira_topk where |V|=k. tail_rho = Spearman(M, LiRA) restricted to
-        # M's top-k members that are also in the LiRA-thr gold V.
-        row["jaccard"] = float("nan")
-        if g_valid is not None and v_valid is not None:
-            set_m = {int(i) for i in order_m}
-            v_set = {int(i) for i in np.where(v_valid)[0]}
-            inter_thr_idx = np.array(sorted(set_m & v_set), dtype=np.intp)
-            row["tail_rho"] = (
-                float(stats.spearmanr(s_valid[inter_thr_idx], g_valid[inter_thr_idx])[0])
-                if inter_thr_idx.size >= 2 else float("nan")
-            )
-        else:
-            row["tail_rho"] = float("nan")
+            tp = int(v_valid[np.argpartition(s_valid, -k)[-k:]].sum())
+            row.update(precision=tp / k, recall=tp / n_v if n_v > 0 else 0.0)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -346,7 +173,7 @@ def compute_lt_iqr_scores(
 
 
 # =============================================================================
-# Locked RARE: z_M(LT-BTM-R) + z_M(LT-IQR)
+# Locked RARE: z_T(LT-BTM-R) + z_T(LT-IQR)
 # =============================================================================
 _REF_LOSS_RE = re.compile(r"^ref_losses_E(\d+)_(.+)_ref(\d+)\.npy$")
 
@@ -460,7 +287,7 @@ def load_rare_locked_scores(
     num_refs: int = 1,
     q: float = 0.50,
 ) -> np.ndarray:
-    """Load trajectories and compute locked RARE = z_M(LT-BTM-R) + z_M(LT-IQR).
+    """Load trajectories and compute locked RARE = z_T(LT-BTM-R) + z_T(LT-IQR).
 
     The target trajectory is read from `per_epoch_losses.npy`; reference
     trajectories are read from `ref_losses_E*_*_ref<r>.npy` files produced by
@@ -493,18 +320,6 @@ def load_rare_locked_scores(
     ).astype(np.float32)
 
 
-# =============================================================================
-# Simple distance-based vulnerability scores.
-# Per-sample distance between the target trajectory and each reference trajectory,
-# flattened across (E, F_slot) and averaged over R references.
-#
-# Polarity intuition:
-#   - target members: target=member-shape, ref=non-member-shape (flipped) → HIGH distance
-#   - unflipped target non-members: both non-member-shape → LOW distance
-#   - flipped target non-members: target=non-member, ref=member-shape → HIGH distance
-# So HIGH score = member. Useful as a no-training baseline; flipped non-members
-# will inflate AUC noise but member-rank metrics ignore them.
-# =============================================================================
 def parse_overrides(overrides: List[str]) -> Dict[str, Any]:
     """
     Parse CLI overrides like:
