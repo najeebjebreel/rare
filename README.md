@@ -1,4 +1,4 @@
-# RARE: Reference-Augmented Ranking by Epoch Statistics to Assess Membership-Inference Vulnerability
+# RARE: Reference-Augmented Ranking by Epoch Statistics to Efficiently Assess Membership-Inference Vulnerability
 
 Official implementation of *RARE* (under submission). RARE ranks a target
 model's known training members by their vulnerability to membership-inference
