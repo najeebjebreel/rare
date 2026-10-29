@@ -134,21 +134,46 @@ def metrics(scores, labels, prot_idx):
     return roc_auc, tprd, prot
 
 
-def run_attack(name, signals, keep, ref_pool, t):
+def attack_params(exp):
+    """Scoring settings of the three attacks, read from the experiment's
+    attack_config.yaml exactly as scripts/attacks.py reads them."""
+    c = yaml.safe_load(open(exp / "attack_config.yaml"))
+    r, k = c["rmia"], c["attackr"]
+    return {
+        "lira_fix_variance": bool(c["lira"].get("fix_variance", False)),
+        "rmia": dict(gamma=float(r.get("gamma", 2.0)),
+                     proportiontocut=float(r.get("proportiontocut", 0.2)),
+                     top_k=int(r.get("top_k", -1)),
+                     ref_selection_seed=int(r.get("ref_selection_seed", c.get("seed", 42))),
+                     offline=r.get("offline", False),
+                     offline_a=float(r.get("offline_a", 0.3)),
+                     augmentation_mode=str(r.get("augmentation", "augmented")).lower(),
+                     chunk_size=int(r.get("gpu_chunk_size", 5000))),
+        "attackr_seed": int(k.get("ref_selection_seed", c.get("seed", 42))),
+    }
+
+
+# Stored attacks.py outputs that each "before" score must reproduce.
+STORED = {"LiRA-256": "lira_refs_256", "RMIA-256": "rmia_refs_256",
+          "Attack-R-128": "attackr_refs_128"}
+
+
+def run_attack(name, signals, keep, ref_pool, t, params):
     """Return (scores, labels) for the chosen strong-attack config."""
     if name == "LiRA-256":
-        return A.lira_scores_for_model_fast(t, signals, keep, False, ref_models=ref_pool)
+        # M=256 >= 64, so attacks.py keeps the configured (per-sample) variance.
+        return A.lira_scores_for_model_fast(t, signals, keep, params["lira_fix_variance"],
+                                            ref_models=ref_pool)
     if name == "RMIA-256":
         s, l = A.rmia_scores_for_model_gpu(
-            t, signals, keep, ref_models=ref_pool, gamma=2.0, proportiontocut=0.0,
-            top_k=-1, num_ref_models=2 * 256, ref_selection_seed=42,
-            offline=False, offline_a=0.3, augmentation_mode="original",
-            device=DEV, chunk_size=5000)
+            t, signals, keep, ref_models=ref_pool, num_ref_models=2 * 256,
+            device=DEV, **params["rmia"])
         return s.astype(np.float32), l
     if name == "Attack-R-128":
-        sub = A._deterministic_choice(ref_pool, 128, seed=42)
+        sub = A._deterministic_choice(ref_pool, 128, seed=params["attackr_seed"])
         s, l = A.attackr_scores_for_model_fast(
-            t, signals, keep, ref_models=sub, num_ref_models=-1, ref_selection_seed=42)
+            t, signals, keep, ref_models=sub, num_ref_models=-1,
+            ref_selection_seed=params["attackr_seed"])
         return s.astype(np.float32), l
     raise ValueError(name)
 
@@ -184,6 +209,7 @@ def evaluate_benchmark(name, exp, taus, targets):
     sanity = []
 
     rmia_metric, rmia_temp, rmia_extra, rmia_views = rmia_signal_spec(exp)
+    params = attack_params(exp)
     sig_fn = {"lira": lambda L: lira_sig(L, labels_t),
               "rmia": lambda L: rmia_sig(L, labels_t, rmia_metric, rmia_temp,
                                          rmia_extra, rmia_views),
@@ -223,7 +249,15 @@ def evaluate_benchmark(name, exp, taus, targets):
         for at, short in SIG_FN.items():
             row_sanity[at] = float(
                 (sig_fn[short](base_basis[short]) - sig[short][t]).abs().max())
-            b_scores, b_labels = run_attack(at, sig[short], keep, ref_pool, t)
+            b_scores, b_labels = run_attack(at, sig[short], keep, ref_pool, t, params)
+            # Score gate: the undefended attack must reproduce the scores that
+            # scripts/attacks.py stored for this target (same settings).
+            stored = np.load(td / "attack_results" / f"{STORED[at]}_scores.npy")
+            gap = float(np.max(np.abs(b_scores - stored)) / (np.max(np.abs(stored)) + 1e-12))
+            if gap > 1e-3:
+                raise SystemExit(
+                    f"SCORE GATE FAILED for {name} target {t} {at}: recomputed scores differ "
+                    f"from attack_results/{STORED[at]}_scores.npy (max rel. diff {gap:.2e}).")
             base[at] = (b_labels, metrics(b_scores, b_labels, mem_idx))
         sanity.append(row_sanity)
         tl_arg = tl2[:, 0].argmax(1).numpy()
@@ -249,7 +283,7 @@ def evaluate_benchmark(name, exp, taus, targets):
                 def_row = orig_row.clone()
                 def_row[mem_idx] = def_sig[mem_idx]
                 sig[short][t] = def_row
-                d_scores, _ = run_attack(at, sig[short], keep, ref_pool, t)
+                d_scores, _ = run_attack(at, sig[short], keep, ref_pool, t, params)
                 d_auc, d_tpr, d_prot = metrics(d_scores, b_labels, mem_idx)
                 sig[short][t] = orig_row
 
