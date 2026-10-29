@@ -44,7 +44,7 @@ DEFAULT_OUTPUT = ROOT / "paper_tabs_figs/tables/tab_defense.tex"
 TARGETS = de.TARGETS
 TAU = 2.0
 # Dataset names exactly as typeset in the paper's table.
-DISPLAY = {"cifar10": "CIFAR10", "cifar100": "CIFAR100", "cinic10": "CINIC-10"}
+DISPLAY = {"cifar10": "CIFAR10", "cifar100": "CIFAR100", "cinic10": "CINIC10"}
 ATTACK_TEX = {"LiRA-256": "LiRA-256", "RMIA-256": "RMIA-256",
               "Attack-R-128": "Attack-R-128"}
 
